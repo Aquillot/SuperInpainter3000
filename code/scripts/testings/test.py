@@ -1,3 +1,4 @@
+import math
 import os
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +11,7 @@ from PIL import Image, ImageDraw
 
 
 from model import UNet
-
+from Trainer import Trainer
 
 base_path = "../../"
 load_batch_size = 64
@@ -137,7 +138,6 @@ def train_unet():
     
     torch.save(model.state_dict(), base_path + "models/testing_unet.pt")
 
-
 def test_model():
     transform = Compose([
         Resize(512),
@@ -184,5 +184,111 @@ def test_model():
 
 
 
-train_unet()
-test_model()
+def train_gan():
+    # ---------- settings ----------
+    base_path = "../../"
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    batch_size = 4             # adapte selon ta GPU
+    total_epochs = 1           # nombre d'epochs (ou utilise iterations dans config)
+    lr = 1e-4
+
+    # ---------- dataset / dataloader ----------
+    transform = Compose([
+        Resize(256),            # adapte si tu veux 512 mais attention mémoire
+        ToTensor(),
+        Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+    ])
+    train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
+    # TrainerSimple crée son propre DataLoader à partir du dataset, donc on passe dataset, pas dataloader
+
+    # ---------- config minimal attendu par TrainerSimple ----------
+    config = {
+        'device': device,
+        'lr': lr,
+        'beta1': 0.5, # valeur classique pour Adam dans les GANs
+        'beta2': 0.999, # valeur classique pour Adam dans les GANs
+        'batch_size': batch_size,
+        'iterations': total_epochs * math.ceil(len(train_dataset) / batch_size),  # max iters approximatif
+        'd2glr': 1.0,                  # lr ratio D/G
+        'adversarial_weight': 0.1,
+        'hole_weight': 1.0,
+        'valid_weight': 1.0,
+        'pyramid_weight': 1.0,         # si tu implémentes feats plus tard
+        'num_workers': 4,             # nombre de "threads" pour le DataLoader
+        'save_dir': base_path + "models"
+    }
+
+    # ensure save dir
+    os.makedirs(config['save_dir'], exist_ok=True)
+
+    # ---------- instantiate trainer and train ----------
+    trainer = Trainer(config, train_dataset)
+    print("Starting training with TrainerSimple...")
+    trainer.train()
+
+    # ---------- save final models ----------
+    trainer.save_models(base_path + "models/final_gen.pth",
+                        base_path + "models/final_disc.pth")
+    print("Saved final models in", config['save_dir'])
+
+def test_model_gen():
+    base_path = "../../"
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    model = UNet(3).to(device)
+
+    state_dict = torch.load(base_path + "models/final_gen_2500.pth")
+    # Retirer le préfixe "unet."
+    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(new_state_dict)
+
+    transform = Compose([
+        Resize(256),
+        ToTensor(),
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
+    dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=True, num_workers=8)
+
+    img_tensor, _ = next(iter(dataloader))
+    img_tensor = img_tensor.to(device)
+    B, C, H, W = img_tensor.shape
+    mask = create_mask(B, H, W, device)
+    mask = 1.0 - mask  # now 1=hole, 0=valid
+
+    # choose fill_value consistent with normalization
+    fill_value = -1.0 if img_tensor.min().item() < 0.0 else 1.0
+
+    # CORRECT : build masked image (keep outside, fill hole)
+    masked = img_tensor * (1.0 - mask) + fill_value * mask
+
+    net_input = torch.cat([masked, mask], dim=1)
+    print("images:", img_tensor.min().item(), img_tensor.max().item(), "mean", img_tensor.mean().item())
+    print("mask:", mask.min().item(), mask.max().item(), "mean", mask.mean().item())
+    print("masked:", masked.min().item(), masked.max().item(), "mean", masked.mean().item())
+    print("net_input:", net_input.min().item(), net_input.max().item(), "mean", net_input.mean().item())
+
+    model.eval()
+    with torch.no_grad():
+        reconstructed = model(net_input)
+
+    fig, ax = plt.subplots(1, 3, figsize=(12,4))
+    ax[0].imshow(to_img(img_tensor))
+    ax[0].set_title("Image originale")
+
+    ax[1].imshow(to_img(masked))
+    ax[1].set_title("Image masquée")
+
+    ax[2].imshow(to_img(reconstructed))
+    ax[2].set_title("Image générée")
+
+
+    for a in ax: a.axis("off")
+    plt.show()
+
+#train_gan()
+for i in range(10):
+    test_model_gen()
+
+

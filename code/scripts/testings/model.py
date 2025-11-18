@@ -102,3 +102,53 @@ class UNet(nn.Module):
         out = self.outconv(xd42)
 
         return out
+
+# Create wrapper (to respect signature (feats, pred_img) = model(inputs, masks)) using UNet architecture defined above
+class InpaintGenerator(nn.Module):
+    def __init__(self, unet):
+        super().__init__()
+        self.unet = unet      # expects UNet instance with n_class=3
+
+    def forward(self, inputs, masks=None):
+        # inputs: (masked_image RGB + mask) -> 4 channels
+        out = self.unet(inputs)           # raw output
+        # Optionally, clamp or tanh depending on data scaling. Keep raw for now.
+        pred_img = out
+        feats = None
+        return feats, pred_img
+
+
+# ---------- helper spectral norm ----------
+def use_spectral_norm(layer, use_sn=True):
+    if use_sn:
+        return nn.utils.spectral_norm(layer)
+    return layer
+
+# ---------- Discriminator (essentiel) ----------
+class Discriminator(nn.Module):
+    """
+    Simple Patch discriminator: downsample convs -> final 1-channel conv (score map).
+    in_channels: 3 (RGB composite image)
+    """
+    def __init__(self, in_channels=3, cnum=64, use_sn=True):
+        super().__init__()
+        self.net = nn.Sequential(
+            use_spectral_norm(nn.Conv2d(in_channels, cnum, kernel_size=5, stride=2, padding=2, bias=False), use_sn),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            use_spectral_norm(nn.Conv2d(cnum, cnum*2, kernel_size=5, stride=2, padding=2, bias=False), use_sn),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            use_spectral_norm(nn.Conv2d(cnum*2, cnum*4, kernel_size=5, stride=2, padding=2, bias=False), use_sn),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            use_spectral_norm(nn.Conv2d(cnum*4, cnum*8, kernel_size=5, stride=1, padding=2, bias=False), use_sn),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.classifier = nn.Conv2d(cnum*8, 1, kernel_size=5, stride=1, padding=2)
+
+    def forward(self, x):
+        x = self.net(x)
+        x = self.classifier(x)
+        return x                 # shape (N,1,H,W)
+
