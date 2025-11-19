@@ -122,4 +122,9 @@ class Trainer:
     def train(self):
         while self.iters < self.max_iters:
             self.train_epoch()
+            
+            pathG = f"{self.config.get('save_dir','./')}/gen_iter_{self.iters}.pth"
+            pathD = f"{self.config.get('save_dir','./')}/disc_iter_{self.iters}.pth"
+            self.save_models(pathG, pathD)
+            print(f"Saved models at iteration {self.iters} to {pathG} and {pathD}")
         print("Training finished")

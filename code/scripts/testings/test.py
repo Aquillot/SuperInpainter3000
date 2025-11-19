@@ -1,3 +1,5 @@
+import kagglehub
+from torch.utils.data import Dataset
 import math
 import os
 import matplotlib.pyplot as plt
@@ -17,6 +19,29 @@ base_path = "../../"
 load_batch_size = 64
 total_epoch = 250
 mask_ratio = 0.5
+
+
+class HumanFacesDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+
+        self.images = [
+            os.path.join(root_dir, f)
+            for f in os.listdir(root_dir)
+            if f.lower().endswith(('.jpg', '.png', '.jpeg'))
+        ]
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.images[idx]).convert("RGB")
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img, 0  # label fictif si ton trainer en attend un
 
 
 def draw_line(mask_channel, x1, y1, x2, y2, thickness):
@@ -188,17 +213,23 @@ def train_gan():
     # ---------- settings ----------
     base_path = "../../"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    batch_size = 4             # adapte selon ta GPU
-    total_epochs = 1           # nombre d'epochs (ou utilise iterations dans config)
+    batch_size = 24             # adapte selon ta GPU
+    total_epochs = 300           # nombre d'epochs (ou utilise iterations dans config)
     lr = 1e-4
 
     # ---------- dataset / dataloader ----------
     transform = Compose([
-        Resize(256),            # adapte si tu veux 512 mais attention mémoire
+        Resize(286),            # redimensionne l’image (par exemple à 286, plus grand que 256)
+        CenterCrop(256),        # recadre au centre en 256×256
         ToTensor(),
-        Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
-    train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
+    
+    path = kagglehub.dataset_download("ashwingupta3012/human-faces")
+
+    train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
+
+    # train_dataset = torchvision.datasets.ImageNet(base_path + "data", split='train', transform=transform)
     # TrainerSimple crée son propre DataLoader à partir du dataset, donc on passe dataset, pas dataloader
 
     # ---------- config minimal attendu par TrainerSimple ----------
@@ -214,7 +245,7 @@ def train_gan():
         'hole_weight': 1.0,
         'valid_weight': 1.0,
         'pyramid_weight': 1.0,         # si tu implémentes feats plus tard
-        'num_workers': 4,             # nombre de "threads" pour le DataLoader
+        'num_workers': 16,             # nombre de "threads" pour le DataLoader
         'save_dir': base_path + "models"
     }
 
@@ -227,8 +258,8 @@ def train_gan():
     trainer.train()
 
     # ---------- save final models ----------
-    trainer.save_models(base_path + "models/final_gen.pth",
-                        base_path + "models/final_disc.pth")
+    trainer.save_models(base_path + "models/final_gen_humanfaces.pth",
+                        base_path + "models/final_disc_humanfaces.pth")
     print("Saved final models in", config['save_dir'])
 
 def test_model_gen():
@@ -237,7 +268,7 @@ def test_model_gen():
 
     model = UNet(3).to(device)
 
-    state_dict = torch.load(base_path + "models/gen_iter_50000.pth")
+    state_dict = torch.load(base_path + "models/final_gen_humanfaces.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -291,7 +322,7 @@ def test_model_gen():
     for a in ax: a.axis("off")
     plt.show()
 
-#train_gan()
+train_gan()
 for i in range(10):
     test_model_gen()
 
