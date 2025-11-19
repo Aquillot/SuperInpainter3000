@@ -248,7 +248,11 @@ def test_model_gen():
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
-    val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
+    image_size = 64
+    DATA_DIR = base_path + 'test-images'
+    val_dataset = torchvision.datasets.ImageFolder(DATA_DIR)
+
+    # val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
     dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=True, num_workers=8)
 
     img_tensor, _ = next(iter(dataloader))
