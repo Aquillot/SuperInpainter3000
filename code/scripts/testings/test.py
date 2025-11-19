@@ -37,14 +37,14 @@ def create_mask(batch_size, H, W, device):
     mask = torch.ones((batch_size, 1, H, W), device=device)
 
     for b in range(batch_size):
-        n_lines = torch.randint(1, 3, (1,)).item()
+        n_lines = torch.randint(3, 8, (1,)).item()
         for _ in range(n_lines):
             x1 = torch.randint(0, W, (1,)).item()
             y1 = torch.randint(0, H, (1,)).item()
             x2 = torch.randint(0, W, (1,)).item()
             y2 = torch.randint(0, H, (1,)).item()
 
-            thickness = torch.randint(3, 8, (1,)).item()
+            thickness = torch.randint(6, 10, (1,)).item()
             draw_line(mask[b, 0], x1, y1, x2, y2, thickness)
 
     return mask
@@ -237,7 +237,7 @@ def test_model_gen():
 
     model = UNet(3).to(device)
 
-    state_dict = torch.load(base_path + "models/final_gen_2500.pth")
+    state_dict = torch.load(base_path + "models/gen_iter_50000.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -248,9 +248,9 @@ def test_model_gen():
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
-    image_size = 64
-    DATA_DIR = base_path + 'test-images'
-    val_dataset = torchvision.datasets.ImageFolder(DATA_DIR)
+    # image_size = 64
+    DATA_DIR = base_path + 'data/test-images'
+    val_dataset = torchvision.datasets.ImageFolder(DATA_DIR, transform=transform)
 
     # val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
     dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=True, num_workers=8)
