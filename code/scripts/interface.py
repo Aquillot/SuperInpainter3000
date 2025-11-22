@@ -112,15 +112,12 @@ class main:
         self.c = Canvas(self.master, width=500, height=400, bg=self.color_bg)
         self.c.pack(fill=BOTH, expand=True)
 
-        # Bouton pour exporter le mask
-        save_btn = Button(self.controls, text='Save mask', command=self.save_mask)
-        save_btn.grid(row=1, column=0, columnspan=2, pady=(10,0))
 
         apply_btn = Button(self.controls, text='Apply mask', command=self.apply_mask)
-        apply_btn.grid(row=2, column=0, columnspan=2, pady=(10,0))
+        apply_btn.grid(row=1, column=0, columnspan=2, pady=(10,0))
 
         load_btn = Button(self.controls, text='Load image', command=self.load_image)
-        load_btn.grid(row=3, column=0, columnspan=2, pady=(10,0))
+        load_btn.grid(row=2, column=0, columnspan=2, pady=(10,0))
 
         menu = Menu(self.master)
         self.master.config(menu=menu)
@@ -183,29 +180,6 @@ class main:
         else:
             self.c.itemconfig(self.canvas_image_id, image=self._loaded_tk_image)
 
-    def save_mask(self):
-        mask = self.get_mask_tensor(to_torch=(torch is not None), device=device)
-        # resize mask to model input size (256x256)
-        if torch is not None and isinstance(mask, torch.Tensor):
-            mask = mask.float()
-            mask = torch.nn.functional.interpolate(mask, size=(256, 256), mode='nearest')
-            mask = mask.to(device)
-        else:
-            # numpy fallback: use PIL resize
-            pil_mask = Image.fromarray((mask[0, 0] * 255).astype(np.uint8))
-            pil_mask = pil_mask.resize((256, 256), resample=Image.NEAREST)
-            mask = np.asarray(pil_mask)[np.newaxis, np.newaxis, :, :] / 255.0
-
-        self.mask = mask
-        self.last_mask = mask
-        # afficher info rapide
-        try:
-            shape = mask.shape
-        except Exception:
-            shape = np.shape(mask)
-        print(f"Mask extracted and resized, shape={shape}")
-        return mask
-
     def apply_mask(self):
         if self.image_to_mask is None:
             print("No image loaded. Use 'Load image' first.")
@@ -214,11 +188,11 @@ class main:
         # prepare image tensor using the same transform used at training
         img_t = transform(self.image_to_mask).unsqueeze(0).to(device)  # (1,3,256,256)
 
-        # ensure mask exists and has correct size
-        if getattr(self, 'mask', None) is None:
-            self.save_mask()
-
-        m = self.mask
+        canva_mask = self.get_mask_tensor(to_torch=(torch is not None), device=device)
+        canva_mask = canva_mask.float()
+        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(256, 256), mode='nearest')
+        canva_mask = canva_mask.to(device)
+        m = canva_mask
         m = m.float()
 
         mask_t = 1.0 - m
