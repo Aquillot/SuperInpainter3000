@@ -22,7 +22,7 @@ import torchvision.transforms.functional as TF
 
 
 from testings.model import UNet
-from utils.image import to_img
+from testings.utils import to_img
 
 base_path = "../"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

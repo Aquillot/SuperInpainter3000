@@ -10,7 +10,7 @@ import torchvision
 import torch
 from tqdm import tqdm
 from PIL import Image, ImageDraw
-from ..utils.image import create_mask, to_img
+from utils import create_mask, to_img
 
 
 from model import UNet
@@ -176,36 +176,37 @@ def test_model():
 
 
 def train_gan():
-    # ---------- settings ----------
-    base_path = "../../"
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    batch_size = 24             # adapte selon ta GPU
-    total_epochs = 300           # nombre d'epochs (ou utilise iterations dans config)
-    lr = 1e-4
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+    print("allocated:", torch.cuda.memory_allocated()/1024**2, "MiB")
+    print("reserved: ", torch.cuda.memory_reserved()/1024**2, "MiB")
 
     # ---------- dataset / dataloader ----------
     transform = Compose([
-        Resize(286),            # redimensionne l’image (par exemple à 286, plus grand que 256)
-        CenterCrop(256),        # recadre au centre en 256×256
+        Resize(256),            # redimensionne l’image (par exemple à 286, plus grand que 256)
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
     
-    path = kagglehub.dataset_download("ashwingupta3012/human-faces")
+    # path = kagglehub.dataset_download("ashwingupta3012/human-faces")
+    # train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
+    train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=transform)
 
-    train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
-
-    # train_dataset = torchvision.datasets.ImageNet(base_path + "data", split='train', transform=transform)
-    # TrainerSimple crée son propre DataLoader à partir du dataset, donc on passe dataset, pas dataloader
+    # ---------- settings ----------
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ---------- config minimal attendu par TrainerSimple ----------
+    batch_size = 18             # adapte selon ta GPU
+    total_epochs = 5           # nombre d'epochs (ou utilise iterations dans config)
+    epoch_size = 0.2
     config = {
         'device': device,
-        'lr': lr,
+        'lr': 1e-4,
         'beta1': 0.5, # valeur classique pour Adam dans les GANs
         'beta2': 0.999, # valeur classique pour Adam dans les GANs
         'batch_size': batch_size,
-        'iterations': total_epochs * math.ceil(len(train_dataset) / batch_size),  # max iters approximatif
+        'iterations': total_epochs * math.ceil(len(train_dataset) / batch_size * epoch_size),  # max iters approximatif
         'd2glr': 1.0,                  # lr ratio D/G
         'adversarial_weight': 0.1,
         'hole_weight': 1.0,
@@ -224,8 +225,8 @@ def train_gan():
     trainer.train()
 
     # ---------- save final models ----------
-    trainer.save_models(base_path + "models/final_gen_humanfaces.pth",
-                        base_path + "models/final_disc_humanfaces.pth")
+    trainer.save_models(base_path + "models/final_gen_place365.pth",
+                        base_path + "models/final_disc_place365.pth")
     print("Saved final models in", config['save_dir'])
 
 def test_model_gen():
@@ -234,7 +235,7 @@ def test_model_gen():
 
     model = UNet(3).to(device)
 
-    state_dict = torch.load(base_path + "models/final_gen_humanfaces.pth")
+    state_dict = torch.load(base_path + "models/final_gen_place365.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -246,11 +247,12 @@ def test_model_gen():
     ])
 
     # image_size = 64
-    DATA_DIR = base_path + 'data/test-images'
-    val_dataset = torchvision.datasets.ImageFolder(DATA_DIR, transform=transform)
+    # DATA_DIR = base_path + 'data/test-images'
+    # val_dataset = torchvision.datasets.ImageFolder(DATA_DIR, transform=transform)
+    val_dataset = torchvision.datasets.Places365(base_path + "data", split='val', download=True, small=True, transform=transform)
 
     # val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
-    dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=True, num_workers=8)
+    dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=8)
 
     img_tensor, _ = next(iter(dataloader))
     img_tensor = img_tensor.to(device)

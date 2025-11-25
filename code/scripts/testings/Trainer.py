@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import csv
+import os
 from model import UNet, InpaintGenerator, Discriminator
 from AdversarialLoss import AdversarialLoss
 
@@ -27,6 +30,18 @@ class Trainer:
         self.optimD = torch.optim.Adam(self.netD.parameters(), lr=config['lr']*config.get('d2glr',1.0), betas=(config.get('beta1',0.5), config.get('beta2',0.999)))
         self.iters = 0
         self.max_iters = config['iterations']
+        
+        # loss tracking for visualization
+        self.loss_history = {
+            'iters': [],
+            'loss_D': [],
+            'loss_D_real': [],
+            'loss_D_fake': [],
+            'loss_G': [],
+            'loss_G_adv': [],
+            'hole_loss': [],
+            'valid_loss': []
+        }
 
     def draw_line(self,mask_channel, x1, y1, x2, y2, thickness):
         # Ligne paramétrique
@@ -110,9 +125,106 @@ class Trainer:
             loss_G.backward()
             self.optimG.step()
 
+            # track losses
+            self.loss_history['iters'].append(self.iters)
+            self.loss_history['loss_D'].append(loss_D.item())
+            self.loss_history['loss_D_real'].append(loss_D_real.item())
+            self.loss_history['loss_D_fake'].append(loss_D_fake.item())
+            self.loss_history['loss_G'].append(loss_G.item())
+            self.loss_history['loss_G_adv'].append(loss_G_adv.item())
+            self.loss_history['hole_loss'].append(hole_loss.item())
+            self.loss_history['valid_loss'].append(valid_loss.item())
+
             # minimal logging
             if self.iters % 100 == 0:
                 print(f"[iter {self.iters}/{self.max_iters}] D_loss: {loss_D.item():.4f} G_loss: {loss_G.item():.4f} adv: {loss_G_adv.item():.4f}")
+
+    def save_metrics(self, filepath):
+        """Save training metrics (losses) to a CSV file."""
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            # Write header
+            header = list(self.loss_history.keys())
+            writer.writerow(header)
+            # Write rows
+            num_rows = len(self.loss_history['iters'])
+            for i in range(num_rows):
+                row = [self.loss_history[key][i] for key in header]
+                writer.writerow(row)
+        print(f"Saved metrics to {filepath}")
+
+    def plot_metrics(self, filepath=None):
+        """Plot training metrics (losses) and optionally save to file.
+        
+        Args:
+            filepath: if provided, save the plot to this path (e.g., 'training_curves.png')
+        """
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig.suptitle('Training Metrics', fontsize=16)
+        
+        iters = self.loss_history['iters']
+        
+        # D losses
+        axes[0, 0].plot(iters, self.loss_history['loss_D'], label='Total D Loss', linewidth=2)
+        axes[0, 0].set_xlabel('Iteration')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title('Discriminator Loss')
+        axes[0, 0].grid(True)
+        axes[0, 0].legend()
+        
+        # D real vs fake
+        axes[0, 1].plot(iters, self.loss_history['loss_D_real'], label='D Real', linewidth=2)
+        axes[0, 1].plot(iters, self.loss_history['loss_D_fake'], label='D Fake', linewidth=2)
+        axes[0, 1].set_xlabel('Iteration')
+        axes[0, 1].set_ylabel('Loss')
+        axes[0, 1].set_title('Discriminator Real vs Fake')
+        axes[0, 1].grid(True)
+        axes[0, 1].legend()
+        
+        # G adversarial loss
+        axes[0, 2].plot(iters, self.loss_history['loss_G_adv'], label='G Adversarial', linewidth=2, color='orange')
+        axes[0, 2].set_xlabel('Iteration')
+        axes[0, 2].set_ylabel('Loss')
+        axes[0, 2].set_title('Generator Adversarial Loss')
+        axes[0, 2].grid(True)
+        axes[0, 2].legend()
+        
+        # Total G loss
+        axes[1, 0].plot(iters, self.loss_history['loss_G'], label='Total G Loss', linewidth=2, color='green')
+        axes[1, 0].set_xlabel('Iteration')
+        axes[1, 0].set_ylabel('Loss')
+        axes[1, 0].set_title('Generator Total Loss')
+        axes[1, 0].grid(True)
+        axes[1, 0].legend()
+        
+        # Hole and valid losses
+        axes[1, 1].plot(iters, self.loss_history['hole_loss'], label='Hole Loss', linewidth=2)
+        axes[1, 1].plot(iters, self.loss_history['valid_loss'], label='Valid Loss', linewidth=2)
+        axes[1, 1].set_xlabel('Iteration')
+        axes[1, 1].set_ylabel('Loss')
+        axes[1, 1].set_title('Pixel-wise Losses')
+        axes[1, 1].grid(True)
+        axes[1, 1].legend()
+        
+        # Combined G loss components
+        axes[1, 2].plot(iters, self.loss_history['loss_G_adv'], label='Adversarial', linewidth=2)
+        axes[1, 2].plot(iters, self.loss_history['hole_loss'], label='Hole', linewidth=2)
+        axes[1, 2].plot(iters, self.loss_history['valid_loss'], label='Valid', linewidth=2)
+        axes[1, 2].set_xlabel('Iteration')
+        axes[1, 2].set_ylabel('Loss')
+        axes[1, 2].set_title('G Loss Components')
+        axes[1, 2].grid(True)
+        axes[1, 2].legend()
+        
+        plt.tight_layout()
+        
+        if filepath:
+            os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+            plt.savefig(filepath, dpi=100, bbox_inches='tight')
+            print(f"Saved plot to {filepath}")
+        
+        plt.show()
 
     def save_models(self, pathG, pathD):
         torch.save(self.netG.state_dict(), pathG)
@@ -127,4 +239,10 @@ class Trainer:
             pathD = f"{self.config.get('save_dir','./')}/disc_iter_{self.iters}.pth"
             self.save_models(pathG, pathD)
             print(f"Saved models at iteration {self.iters} to {pathG} and {pathD}")
+
+            save_dir = self.config.get('save_dir', './')
+            metrics_csv = f"{save_dir}/training_metrics.csv"
+            metrics_plot = f"{save_dir}/training_curves.png"
+            self.save_metrics(metrics_csv)
+            self.plot_metrics(metrics_plot)
         print("Training finished")
