@@ -4,7 +4,7 @@ from torchvision import models
 from torch.nn.functional import relu
 
 class UNet(nn.Module):
-    def __init__(self, n_class):
+    def __init__(self, n_class, init_weights=True):
         super().__init__()
         
         # Encoder
@@ -55,6 +55,11 @@ class UNet(nn.Module):
 
         # Output layer
         self.outconv = nn.Conv2d(64, n_class, kernel_size=1)
+
+        self.need_mask_input = False
+
+        # if init_weights:
+        #     self.init_weights()
     
     def forward(self, x):
         # Encoder
@@ -105,13 +110,16 @@ class UNet(nn.Module):
 
 # Create wrapper (to respect signature (feats, pred_img) = model(inputs, masks)) using UNet architecture defined above
 class InpaintGenerator(nn.Module):
-    def __init__(self, unet):
+    def __init__(self, net):
         super().__init__()
-        self.unet = unet      # expects UNet instance with n_class=3
+        self.net = net      # expects UNet instance with n_class=3
 
     def forward(self, inputs, masks=None):
         # inputs: (masked_image RGB + mask) -> 4 channels
-        out = self.unet(inputs)           # raw output
+        if(self.net.need_mask_input):
+            out = self.net(inputs, masks)           # raw output
+        else:
+            out = self.net(inputs)           # raw output
         # Optionally, clamp or tanh depending on data scaling. Keep raw for now.
         pred_img = out
         feats = None
