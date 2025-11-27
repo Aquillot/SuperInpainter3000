@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import csv
 import os
+import math
+
 
 from model import UNet, InpaintGenerator, Discriminator,PenNET
 from AdversarialLoss import AdversarialLoss
@@ -30,7 +32,7 @@ class Trainer:
         self.optimG = torch.optim.Adam(self.netG.parameters(), lr=config['lr'], betas=(config.get('beta1',0.5), config.get('beta2',0.999)))
         self.optimD = torch.optim.Adam(self.netD.parameters(), lr=config['lr']*config.get('d2glr',1.0), betas=(config.get('beta1',0.5), config.get('beta2',0.999)))
         self.iters = 0
-        self.max_iters = config['iterations']
+        self.max_iters = config["total_epochs"] * math.ceil(len(dataset) / config["batch_size"])
         
         # loss tracking for visualization
         self.loss_history = {
