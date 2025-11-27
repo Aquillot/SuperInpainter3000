@@ -29,7 +29,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 model = UNet(3).to(device)
 
-state_dict = torch.load(base_path + "models/unet_300.pt")
+state_dict = torch.load(base_path + "models/gen_iter_50000.pth")
 # Retirer le préfixe "unet."
 new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
 model.load_state_dict(new_state_dict)

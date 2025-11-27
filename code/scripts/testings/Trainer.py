@@ -4,11 +4,13 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import csv
 import os
-from model import UNet, InpaintGenerator, Discriminator
+
+from model import UNet, InpaintGenerator, Discriminator,PenNET
 from AdversarialLoss import AdversarialLoss
+import torch.nn.functional as F
 
 class Trainer:
-    def __init__(self, config, dataset):
+    def __init__(self, config, dataset,model=PenNET()):
         """
         config: dict contenant au minimum:
           - lr, beta1, beta2, batch_size, iterations,
@@ -20,8 +22,7 @@ class Trainer:
         self.config = config
         self.dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True, num_workers=config.get('num_workers',4), pin_memory=True)
         # models
-        unet = UNet(n_class=3)           # ton UNet défini ailleurs
-        self.netG = InpaintGenerator(unet).to(self.device)
+        self.netG = InpaintGenerator(model).to(self.device)
         self.netD = Discriminator(in_channels=3, use_sn=True).to(self.device)
         # losses & optimizers
         self.adv_loss = AdversarialLoss().to(self.device)
@@ -121,7 +122,12 @@ class Trainer:
             hole_loss = self.l1(pred_img * masks, images * masks) / (masks.mean() + 1e-6)
             valid_loss = self.l1(pred_img * (1 - masks), images * (1 - masks)) / ((1 - masks).mean() + 1e-6)
             loss_G = loss_G + hole_loss * self.config.get('hole_weight',1.0) + valid_loss * self.config.get('valid_weight',1.0)
-            # pyramid loss omitted here (feats is None). If you implement feats, add it.
+            # pyramid loss
+            if feats is not None and self.config.get('pyramid_weight',0.0) > 0.0:
+                pyramid_loss = 0.0
+                for _, f in enumerate(feats):
+                    pyramid_loss += self.l1(f, F.interpolate(images, size=f.size()[2:4], mode='bilinear',align_corners=True))
+                loss_G = loss_G + pyramid_loss * self.config.get('pyramid_weight',1.0)
             loss_G.backward()
             self.optimG.step()
 
