@@ -10,6 +10,8 @@ import torchvision
 import torch
 from tqdm import tqdm
 from PIL import Image, ImageDraw
+
+from model import PenNET
 from utils import create_mask, to_img
 
 
@@ -188,7 +190,7 @@ def train_gan():
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
-    
+
     # path = kagglehub.dataset_download("ashwingupta3012/human-faces")
     # train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
     train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
@@ -210,9 +212,9 @@ def train_gan():
         'iterations': total_epochs * math.ceil(len(train_dataset) / batch_size),  # max iters approximatif
         'd2glr': 1.0,                  # lr ratio D/G
         'adversarial_weight': 0.1,
-        'hole_weight': 1.0,
+        'hole_weight': 6.0, # poids de la loss dans la zone masquée plus important que dans la zone valide car on veut bien remplir les trous
         'valid_weight': 1.0,
-        'pyramid_weight': 1.0,         # si tu implémentes feats plus tard
+        'pyramid_weight': 0.5,
         'num_workers': 16,             # nombre de "threads" pour le DataLoader
         'save_dir': base_path + "models"
     }
@@ -234,7 +236,7 @@ def test_model_gen():
     base_path = "../../"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = UNet(3).to(device)
+    model = PenNET(3).to(device)
 
     state_dict = torch.load(base_path + "models/final_gen_PENNet.pth")
     # Retirer le préfixe "unet."
@@ -277,7 +279,7 @@ def test_model_gen():
     with torch.no_grad():
         feats, reconstructed = model(net_input,mask)
 
-    fig, ax = plt.subplots(1, 3, figsize=(12,4))
+    fig, ax = plt.subplots(1, 4, figsize=(12,4))
     ax[0].imshow(to_img(img_tensor))
     ax[0].set_title("Image originale")
 
@@ -287,6 +289,11 @@ def test_model_gen():
     ax[2].imshow(to_img(reconstructed))
     ax[2].set_title("Image générée")
 
+    # Image triché avec la partie non masquée de l'originale
+    cheated = reconstructed * mask + img_tensor * (1.0 - mask)
+    ax[3].imshow(to_img(cheated))
+    ax[3].set_title("Assemblage généré/original")
+
     # Calcul du psnr entre img_tensor et reconstructed
     mse = torch.mean((img_tensor - reconstructed) ** 2).item()
     psnr = 10 * math.log10(1.0 / mse) if mse > 0 else float('inf')
@@ -295,8 +302,7 @@ def test_model_gen():
 
     for a in ax: a.axis("off")
     plt.show()
-
-train_gan()
+#train_gan()
 for i in range(10):
     test_model_gen()
 

@@ -56,7 +56,7 @@ class UNet(nn.Module):
         # Output layer
         self.outconv = nn.Conv2d(64, n_class, kernel_size=1)
     
-    def forward(self, x):
+    def forward(self, x, mask=None):
         # Encoder
         xe11 = F.relu(self.e11(x))
         xe12 = F.relu(self.e12(xe11))
