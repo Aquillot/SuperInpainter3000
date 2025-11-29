@@ -3,7 +3,7 @@ from tkinter import colorchooser, ttk, filedialog
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
-from testings.model import PenNET
+from testings.model import PenNET, InpaintGenerator
 
 try:
     import torch
@@ -15,7 +15,7 @@ except Exception:
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import numpy as np
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, CenterCrop
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
 import torchvision
 import torch
 from tqdm import tqdm
@@ -30,9 +30,9 @@ from testings.utils import to_img
 base_path = "../"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 try :
-    model = PenNET(3).to(device)
+    model = InpaintGenerator(PenNET(3)).to(device)
 
-    state_dict = torch.load(base_path + "models/final_gen_PENNet.pth")
+    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -41,15 +41,17 @@ except Exception as e:
     print("Could not load model:", e, "\n Try to load with UNet architecture.")
     print ("\033[0m")   # Réinitialiser la couleur
     model = UNet(3).to(device)
-    state_dict = torch.load(base_path + "models/final_gen_PENNet.pth")
+    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
 
 transform = Compose([
-    Resize(256),
+    Resize(64, interpolation=InterpolationMode.NEAREST),
     ToTensor(),
     Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
+
+target_model_resolution = 64
 
 
 
@@ -62,8 +64,8 @@ class main:
         self.old_y = None
         self.pen_width = 5
         # creer une image PIL miroir du canvas pour extraction de mask
-        self.canvas_width = 500
-        self.canvas_height = 400
+        self.canvas_width = 128
+        self.canvas_height = 128
         self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
         self._draw = ImageDraw.Draw(self._pil_image)
         self.drawWidgets()
@@ -120,7 +122,7 @@ class main:
         self.slider.set(self.pen_width)
         self.slider.grid(row=0, column=1)
         self.controls.pack(side="left")
-        self.c = Canvas(self.master, width=500, height=400, bg=self.color_bg)
+        self.c = Canvas(self.master, width=128, height=128, bg=self.color_bg)
         self.c.pack(fill=BOTH, expand=True)
 
 
@@ -201,7 +203,7 @@ class main:
 
         canva_mask = self.get_mask_tensor(to_torch=(torch is not None), device=device , invert=True)
         canva_mask = canva_mask.float()
-        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(256, 256), mode='nearest')
+        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(target_model_resolution, target_model_resolution), mode='nearest')
         canva_mask = canva_mask.to(device)
         m = canva_mask
         m = m.float()

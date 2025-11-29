@@ -2,7 +2,7 @@ import kagglehub
 from torch.utils.data import Dataset
 import os
 import matplotlib.pyplot as plt
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, CenterCrop
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
 import torchvision
 import torch
 from tqdm import tqdm
@@ -25,18 +25,22 @@ config = {
     'lr': 1e-4,
     'beta1': 0.5, # valeur classique pour Adam dans les GANs
     'beta2': 0.999, # valeur classique pour Adam dans les GANs
-    'batch_size': 12,
+    'batch_size': 64,
     "total_epochs": 1,
     'd2glr': 1.0,                  # lr ratio D/G
+    'num_workers': 16,             # nombre de "threads" pour le DataLoader
+    'save_dir': base_path + "models",
+    'current_model_name': 'epoch_1',
+
+    'image_range': 'tanh',
     'adversarial_weight': 0.1,
     'hole_weight': 6.0, # poids de la loss dans la zone masquée plus important que dans la zone valide car on veut bien remplir les trous
     'valid_weight': 1.0,
     'pyramid_weight': 0.5,
-    'num_workers': 16,             # nombre de "threads" pour le DataLoader
-    'save_dir': base_path + "models",
-    'current_model_name': 'jteste',
 
-    "mask_ratio" : 0.5
+    "mask_ratio" : 0.5,
+    "train": False,
+    "dataset_images_size": 64
 }
 
 
@@ -160,27 +164,27 @@ def train_gan():
 
     # ---------- dataset / dataloader ----------
     transform = Compose([
-        Resize(256),            # redimensionne l’image (par exemple à 286, plus grand que 256)
+        Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),            # redimensionne l’image (par exemple à 286, plus grand que 256)
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
     # path = kagglehub.dataset_download("ashwingupta3012/human-faces")
     # train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
-    train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
-    #train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=transform)
+    # train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
+    train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=transform)
 
     # ensure save dir
     os.makedirs(config['save_dir'], exist_ok=True)
 
     # ---------- instantiate trainer and train ----------
-    trainer = Trainer(config, train_dataset)
+    trainer = Trainer(config, train_dataset, PenNET(3))
     print("Starting training with TrainerSimple...")
     trainer.train()
 
     # ---------- save final models ----------
-    trainer.save_models(base_path + f"models/final_gen_{config['current_model_name']}.pth",
-                        base_path + f"models/final_disc_{config['current_model_name']}.pth")
+    trainer.save_models(base_path + f"models/gen_{config['current_model_name']}.pth",
+                        base_path + f"models/disc_{config['current_model_name']}.pth")
     print("Saved final models in", config['save_dir'])
 
 def test_model_gen():
@@ -189,11 +193,11 @@ def test_model_gen():
 
     model = InpaintGenerator(PenNET(3)).to(device)
 
-    state_dict = torch.load(base_path + f"models/final_gen_{config['current_model_name']}.pth")
+    state_dict = torch.load(base_path + f"models/gen_{config['current_model_name']}.pth")
     model.load_state_dict(state_dict)
 
     transform = Compose([
-        Resize(256),
+        Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
@@ -210,7 +214,7 @@ def test_model_gen():
     img_tensor = img_tensor.to(device)
     B, C, H, W = img_tensor.shape
     mask = create_mask(B, H, W, device)
-    mask = 1.0 - mask  # now 1=hole, 0=valid
+    # mask = 1.0 - mask  # now 1=hole, 0=valid
 
     # choose fill_value consistent with normalization
     fill_value = -1.0 if img_tensor.min().item() < 0.0 else 1.0
@@ -252,7 +256,9 @@ def test_model_gen():
     for a in ax: a.axis("off")
     plt.show()
 
-# train_gan()
+
+if(config["train"]):
+    train_gan()
 for i in range(10):
     test_model_gen()
 
