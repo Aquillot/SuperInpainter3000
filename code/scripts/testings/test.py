@@ -1,15 +1,15 @@
 import kagglehub
 from torch.utils.data import Dataset
-import math
 import os
 import matplotlib.pyplot as plt
-import numpy as np
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, CenterCrop
-from torch.utils.tensorboard import SummaryWriter
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
 import torchvision
 import torch
 from tqdm import tqdm
-from PIL import Image, ImageDraw
+from PIL import Image
+import math
+
+from model import PenNET, InpaintGenerator
 from utils import create_mask, to_img
 
 
@@ -17,9 +17,33 @@ from model import UNet
 from Trainer import Trainer
 
 base_path = "../../"
-load_batch_size = 64
-total_epoch = 250
-mask_ratio = 0.5
+
+epoch_size = 0.2
+
+config = {
+    'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+    'lr': 1e-4,
+    'beta1': 0.5, # valeur classique pour Adam dans les GANs
+    'beta2': 0.999, # valeur classique pour Adam dans les GANs
+    'batch_size': 64,
+    "total_epochs": 1,
+    'd2glr': 1.0,                  # lr ratio D/G
+    'num_workers': 16,             # nombre de "threads" pour le DataLoader
+    'save_dir': base_path + "models",
+    'current_model_name': 'epoch_1',
+
+    'image_range': 'tanh',
+    'adversarial_weight': 0.1,
+    'hole_weight': 6.0, # poids de la loss dans la zone masquée plus important que dans la zone valide car on veut bien remplir les trous
+    'valid_weight': 1.0,
+    'pyramid_weight': 0.5,
+
+    "mask_ratio" : 0.5,
+    "train": False,
+    "dataset_images_size": 64
+}
+
+
 
 
 class HumanFacesDataset(Dataset):
@@ -62,9 +86,9 @@ def test_masking():
     img_tensor, _ = next(iter(dataloader))   # shape : (1,3,256,256)
     img_tensor = img_tensor.to(device)
     mask = create_mask(1, 256, 256, device)
-    
+
     masked = img_tensor * mask
-    
+
 
     mask_vis = mask.repeat(1, 3, 1, 1)
 
@@ -129,50 +153,6 @@ def train_unet():
     
     torch.save(model.state_dict(), base_path + "models/testing_unet.pt")
 
-def test_model():
-    transform = Compose([
-        Resize(512),
-        # CenterCrop(224),                # Rogner au centre pour avoir 224x224
-        ToTensor(),
-        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-
-    val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
-    dataloader = torch.utils.data.DataLoader(val_dataset, load_batch_size, shuffle=True, num_workers=8)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-
-
-
-    model = UNet(3).to(device)
-    model.load_state_dict(torch.load(base_path + "models/testing_unet.pt", weights_only=True))
-
-    img_tensor, _ = next(iter(dataloader))
-    img_tensor = img_tensor.to(device)
-    B, C, H, W = img_tensor.shape
-    mask = create_mask(B, H, W, device)
-    
-    masked = img_tensor * mask
-
-    net_input = torch.cat([masked, mask], dim=1)
-
-    reconstructed = model(net_input)
-
-    fig, ax = plt.subplots(1, 3, figsize=(12,4))
-    ax[0].imshow(to_img(img_tensor))
-    ax[0].set_title("Image originale")
-
-    ax[1].imshow(to_img(masked))
-    ax[1].set_title("Image masquée")
-
-    ax[2].imshow(to_img(reconstructed))
-    ax[2].set_title("Image générée")
-
-
-    for a in ax: a.axis("off")
-    plt.show()
-    
-
 
 
 def train_gan():
@@ -184,64 +164,40 @@ def train_gan():
 
     # ---------- dataset / dataloader ----------
     transform = Compose([
-        Resize(256),            # redimensionne l’image (par exemple à 286, plus grand que 256)
+        Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),            # redimensionne l’image (par exemple à 286, plus grand que 256)
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
-    
+
     # path = kagglehub.dataset_download("ashwingupta3012/human-faces")
     # train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
+    # train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
     train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=transform)
-
-    # ---------- settings ----------
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # ---------- config minimal attendu par TrainerSimple ----------
-    batch_size = 18             # adapte selon ta GPU
-    total_epochs = 5           # nombre d'epochs (ou utilise iterations dans config)
-    epoch_size = 0.2
-    config = {
-        'device': device,
-        'lr': 1e-4,
-        'beta1': 0.5, # valeur classique pour Adam dans les GANs
-        'beta2': 0.999, # valeur classique pour Adam dans les GANs
-        'batch_size': batch_size,
-        'iterations': total_epochs * math.ceil(len(train_dataset) / batch_size * epoch_size),  # max iters approximatif
-        'd2glr': 1.0,                  # lr ratio D/G
-        'adversarial_weight': 0.1,
-        'hole_weight': 1.0,
-        'valid_weight': 1.0,
-        'pyramid_weight': 1.0,         # si tu implémentes feats plus tard
-        'num_workers': 16,             # nombre de "threads" pour le DataLoader
-        'save_dir': base_path + "models"
-    }
 
     # ensure save dir
     os.makedirs(config['save_dir'], exist_ok=True)
 
     # ---------- instantiate trainer and train ----------
-    trainer = Trainer(config, train_dataset)
+    trainer = Trainer(config, train_dataset, PenNET(3))
     print("Starting training with TrainerSimple...")
     trainer.train()
 
     # ---------- save final models ----------
-    trainer.save_models(base_path + "models/final_gen_place365.pth",
-                        base_path + "models/final_disc_place365.pth")
+    trainer.save_models(base_path + f"models/gen_{config['current_model_name']}.pth",
+                        base_path + f"models/disc_{config['current_model_name']}.pth")
     print("Saved final models in", config['save_dir'])
 
 def test_model_gen():
     base_path = "../../"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = UNet(3).to(device)
+    model = InpaintGenerator(PenNET(3)).to(device)
 
-    state_dict = torch.load(base_path + "models/final_gen_place365.pth")
-    # Retirer le préfixe "unet."
-    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(new_state_dict)
+    state_dict = torch.load(base_path + f"models/gen_{config['current_model_name']}.pth")
+    model.load_state_dict(state_dict)
 
     transform = Compose([
-        Resize(256),
+        Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
@@ -249,16 +205,16 @@ def test_model_gen():
     # image_size = 64
     # DATA_DIR = base_path + 'data/test-images'
     # val_dataset = torchvision.datasets.ImageFolder(DATA_DIR, transform=transform)
-    val_dataset = torchvision.datasets.Places365(base_path + "data", split='val', download=True, small=True, transform=transform)
+    #val_dataset = torchvision.datasets.Places365(base_path + "data", split='val', download=True, small=True, transform=transform)
 
-    # val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
+    val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
     dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=8)
 
     img_tensor, _ = next(iter(dataloader))
     img_tensor = img_tensor.to(device)
     B, C, H, W = img_tensor.shape
     mask = create_mask(B, H, W, device)
-    mask = 1.0 - mask  # now 1=hole, 0=valid
+    # mask = 1.0 - mask  # now 1=hole, 0=valid
 
     # choose fill_value consistent with normalization
     fill_value = -1.0 if img_tensor.min().item() < 0.0 else 1.0
@@ -274,9 +230,9 @@ def test_model_gen():
 
     model.eval()
     with torch.no_grad():
-        reconstructed = model(net_input)
+        feats, reconstructed = model(net_input,mask)
 
-    fig, ax = plt.subplots(1, 3, figsize=(12,4))
+    fig, ax = plt.subplots(1, 4, figsize=(12,4))
     ax[0].imshow(to_img(img_tensor))
     ax[0].set_title("Image originale")
 
@@ -286,11 +242,23 @@ def test_model_gen():
     ax[2].imshow(to_img(reconstructed))
     ax[2].set_title("Image générée")
 
+    # Image triché avec la partie non masquée de l'originale
+    cheated = reconstructed * mask + img_tensor * (1.0 - mask)
+    ax[3].imshow(to_img(cheated))
+    ax[3].set_title("Assemblage généré/original")
+
+    # Calcul du psnr entre img_tensor et reconstructed
+    mse = torch.mean((img_tensor - reconstructed) ** 2).item()
+    psnr = 10 * math.log10(1.0 / mse) if mse > 0 else float('inf')
+    print(f"PSNR entre image originale et image générée: {psnr:.2f} dB")
+
 
     for a in ax: a.axis("off")
     plt.show()
 
-train_gan()
+
+if(config["train"]):
+    train_gan()
 for i in range(10):
     test_model_gen()
 

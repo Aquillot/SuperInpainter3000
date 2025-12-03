@@ -2,6 +2,9 @@ from tkinter import *
 from tkinter import colorchooser, ttk, filedialog
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
+
+from testings.model import PenNET, InpaintGenerator
+
 try:
     import torch
 except Exception:
@@ -12,7 +15,7 @@ except Exception:
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import numpy as np
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, CenterCrop
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
 import torchvision
 import torch
 from tqdm import tqdm
@@ -26,19 +29,29 @@ from testings.utils import to_img
 
 base_path = "../"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+try :
+    model = InpaintGenerator(PenNET(3)).to(device)
 
-model = UNet(3).to(device)
-
-state_dict = torch.load(base_path + "models/unet_300.pt")
-# Retirer le préfixe "unet."
-new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
-model.load_state_dict(new_state_dict)
+    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
+    # Retirer le préfixe "unet."
+    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(new_state_dict)
+except Exception as e:
+    print ("\033[91m")  # Code ANSI pour le rouge
+    print("Could not load model:", e, "\n Try to load with UNet architecture.")
+    print ("\033[0m")   # Réinitialiser la couleur
+    model = UNet(3).to(device)
+    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
+    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(new_state_dict)
 
 transform = Compose([
-    Resize(256),
+    Resize(64, interpolation=InterpolationMode.NEAREST),
     ToTensor(),
     Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
+
+target_model_resolution = 64
 
 
 
@@ -51,8 +64,8 @@ class main:
         self.old_y = None
         self.pen_width = 5
         # creer une image PIL miroir du canvas pour extraction de mask
-        self.canvas_width = 500
-        self.canvas_height = 400
+        self.canvas_width = 128
+        self.canvas_height = 128
         self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
         self._draw = ImageDraw.Draw(self._pil_image)
         self.drawWidgets()
@@ -109,7 +122,7 @@ class main:
         self.slider.set(self.pen_width)
         self.slider.grid(row=0, column=1)
         self.controls.pack(side="left")
-        self.c = Canvas(self.master, width=500, height=400, bg=self.color_bg)
+        self.c = Canvas(self.master, width=128, height=128, bg=self.color_bg)
         self.c.pack(fill=BOTH, expand=True)
 
 
@@ -157,7 +170,7 @@ class main:
 
 
     def load_image(self):
-        filename = filedialog.askopenfilename(initialdir = "~",
+        filename = filedialog.askopenfilename(initialdir = ".",
                                           title = "Select a File",
                                           filetypes = (("image files", "*.jpg*"),
                                               ("all files", "*.*")))
@@ -188,38 +201,35 @@ class main:
         # prepare image tensor using the same transform used at training
         img_t = transform(self.image_to_mask).unsqueeze(0).to(device)  # (1,3,256,256)
 
-        canva_mask = self.get_mask_tensor(to_torch=(torch is not None), device=device)
+        canva_mask = self.get_mask_tensor(to_torch=(torch is not None), device=device , invert=True)
         canva_mask = canva_mask.float()
-        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(256, 256), mode='nearest')
+        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(target_model_resolution, target_model_resolution), mode='nearest')
         canva_mask = canva_mask.to(device)
         m = canva_mask
         m = m.float()
 
         mask_t = 1.0 - m
-        if torch is not None and isinstance(mask_t, torch.Tensor):
-            mask_t = mask_t.to(device)
-        else:
-            # convert numpy mask to torch
-            mask_t = torch.from_numpy(mask_t).float().to(device)
 
         # Build masked image: here mask==1 means kept pixels
-        masked_img = img_t * mask_t
+        fill_value = -1.0 if img_t.min().item() < 0.0 else 1.0
+
+        # build input: masked image + mask channel
+        masked_img = img_t * (1 - mask_t) + fill_value * mask_t  # fill holes
 
         net_input = torch.cat([masked_img, mask_t], dim=1)
 
         model.eval()
         with torch.no_grad():
-            reconstructed = model(net_input)
+            feats, reconstructed = model(net_input, mask_t)
 
-        # Denormalize for display (assumes Normalize(mean=0.5,std=0.5))
-        def denorm(t):
-            return (t * 0.5 + 0.5).clamp(0, 1)
+        cheated = reconstructed * mask_t + img_t * (1.0 - mask_t)
 
-        img_disp = denorm(img_t[0]).permute(1, 2, 0).cpu().numpy()
-        masked_disp = denorm(masked_img[0]).permute(1, 2, 0).cpu().numpy()
-        recon_disp = denorm(reconstructed[0]).permute(1, 2, 0).cpu().numpy()
+        img_disp = to_img(img_t)
+        masked_disp = to_img(masked_img)
+        recon_disp = to_img(reconstructed)
+        cheated = to_img(cheated)
 
-        fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+        fig, ax = plt.subplots(1, 4, figsize=(12, 4))
         ax[0].imshow(img_disp)
         ax[0].set_title("Image originale")
 
@@ -229,6 +239,11 @@ class main:
         ax[2].imshow(recon_disp)
         ax[2].set_title("Image générée")
 
+        # Image triché avec la partie non masquée de l'originale
+
+        ax[3].imshow(cheated)
+        ax[3].set_title("Assemblage généré/original")
+
         for a in ax:
             a.axis("off")
         plt.show()
@@ -237,6 +252,6 @@ class main:
 
 
 win = Tk()
-win.title("Paint App")
+win.title("Adobe3000 Premium edition 0.1$/s")
 main(win)
 win.mainloop()
