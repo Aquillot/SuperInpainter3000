@@ -2,6 +2,7 @@ from tkinter import *
 from tkinter import colorchooser, ttk, filedialog
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
+from PIL import ImageGrab
 
 from testings.model import PenNET, InpaintGenerator, UNet
 
@@ -30,7 +31,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 try :
     model = InpaintGenerator(UNet(3)).to(device)
 
-    state_dict = torch.load(base_path + "models/gen_epoch_1.pth")
+    state_dict = torch.load(base_path + "models/gen_epoch_18.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -39,11 +40,12 @@ except Exception as e:
     print("Could not load model:", e, "\n Try to load with UNet architecture.")
     print ("\033[0m")   # Réinitialiser la couleur
     model = UNet(3).to(device)
-    state_dict = torch.load(base_path + "models/gen_epoch_1.pth")
+    state_dict = torch.load(base_path + "models/gen_epoch_18.pth")
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
 
 target_model_resolution = 128
+canva_resolution = 512
 
 transform = Compose([
     Resize(target_model_resolution, interpolation=InterpolationMode.NEAREST),
@@ -63,24 +65,51 @@ class main:
         self.old_y = None
         self.pen_width = 5
         # creer une image PIL miroir du canvas pour extraction de mask
-        self.canvas_width = target_model_resolution
-        self.canvas_height = target_model_resolution
-        self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
-        self._draw = ImageDraw.Draw(self._pil_image)
+        self.canvas_width = canva_resolution
+        self.canvas_height = canva_resolution
+        self._pil_image = Image.new("RGBA", (self.canvas_width, self.canvas_height), (255, 255, 255, 0))
+        self._draw = ImageDraw.Draw(self._pil_image, "RGBA")
         self.drawWidgets()
         self.c.bind('<B1-Motion>', self.paint)
         self.c.bind('<ButtonRelease-1>', self.reset)
 
         self.mask = None
         self.image_to_mask = None
+    def capture_canvas_as_pil(self):
+        """
+        Capture le Canvas Tkinter entier en une image PIL.
+        Retourne une image PIL RGB identique au Canvas affiché.
+        """
+        # coordonnées absolues du canvas dans l'écran
+        self.master.update()  # s'assurer des coordonnées à jour
+        x = self.c.winfo_rootx()
+        y = self.c.winfo_rooty()
+        w = x + self.c.winfo_width()
+        h = y + self.c.winfo_height()
+
+        # capture écran → PIL
+        return ImageGrab.grab(bbox=(x, y, w, h))
+
 
     def paint(self, e):
-        if self.old_x and self.old_y:
+        if self.old_x is not None and self.old_y is not None:
             w = int(round(self.pen_width))
-            self.c.create_line(self.old_x, self.old_y, e.x, e.y, width=w, fill = self.color_fg, capstyle='round', smooth = True)
-            # dessiner aussi sur l'image PIL miroir
-            # Pillow line draws inclusive of end points; convert coords to tuple
-            self._draw.line([(self.old_x, self.old_y), (e.x, e.y)], fill=self.color_fg, width=w)
+
+            # === 1) Dessin AFFICHÉ sur le Canvas (RGB) ===
+            self.c.create_line(
+                self.old_x, self.old_y, e.x, e.y,
+                width=w, fill=self.color_fg,
+                capstyle='round', smooth=True
+            )
+
+            # === 2) Dessin INVISIBLE dans l'image PIL (ALPHA seulement) ===
+            draw_color = (0, 0, 0, 255)  # alpha = 255 pour le mask
+            self._draw.line(
+                [(self.old_x, self.old_y), (e.x, e.y)],
+                fill=draw_color,
+                width=w
+            )
+
         self.old_x = e.x
         self.old_y = e.y
 
@@ -141,30 +170,23 @@ class main:
         optionmenu.add_command(label='Exit', command=self.master.destroy)    
     
     def get_mask_tensor(self, invert=False, to_torch=True, device='cpu'):
-        """
-        Retourne un mask binaire issu du canvas PIL miroir.
-        - compare la valeur en niveau de gris du pixel (0,0) comme fond
-        - retourne shape (1,1,H,W)
-        - si `to_torch` et torch est disponible, retourne un `torch.float32` tensor sur `device`
-        """
-        # récupérer image PIL
-        pil = self._pil_image.convert('L')
-        arr = np.asarray(pil)
-        # background estimated from top-left pixel
-        bg = arr[0, 0]
-        mask = (arr != bg).astype(np.float32)
+        # image RGBA
+        rgba = self._pil_image
+
+        # récupérer le canal alpha
+        alpha = np.array(rgba.split()[3])  # canal 3 = alpha
+
+        # alpha > 0 = zone où tu as dessiné
+        mask = (alpha > 0).astype(np.float32)
+
         if invert:
             mask = 1.0 - mask
 
-        # shape -> (1,1,H,W)
-        mask = mask[np.newaxis, np.newaxis, :, :]
+        mask = mask[None, None, :, :]  # (1,1,H,W)
 
-        if to_torch and (torch is not None):
-            try:
-                t = torch.from_numpy(mask).float().to(device)
-                return t
-            except Exception:
-                return mask
+        if to_torch:
+            return torch.from_numpy(mask).float().to(device)
+
         return mask
 
 

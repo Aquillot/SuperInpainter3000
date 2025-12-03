@@ -31,7 +31,7 @@ config = {
     'd2glr': 1.0,                  # lr ratio D/G
     'num_workers': 16,             # nombre de "threads" pour le DataLoader
     'save_dir': base_path + "models",
-    'current_model_name': 'epoch_20_128_adv01',
+    'current_model_name': 'epoch_18',
 
     'image_range': 'tanh',
     'adversarial_weight': 0.1,
@@ -41,7 +41,7 @@ config = {
 
     'mask_ratio': 0.1,
     
-    "train": True,
+    "train": False,
     "dataset_images_size": 128
 }
 
