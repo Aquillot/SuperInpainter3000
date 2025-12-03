@@ -3,7 +3,7 @@ from tkinter import colorchooser, ttk, filedialog
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
-from testings.model import PenNET, InpaintGenerator
+from testings.model import PenNET, InpaintGenerator, UNet
 
 try:
     import torch
@@ -23,16 +23,14 @@ from PIL import Image, ImageDraw
 import torchvision.transforms.functional as TF
 
 
-
-from testings.model import UNet
 from testings.utils import to_img
 
 base_path = "../"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 try :
-    model = InpaintGenerator(PenNET(3)).to(device)
+    model = InpaintGenerator(UNet(3)).to(device)
 
-    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
+    state_dict = torch.load(base_path + "models/gen_epoch_1.pth")
     # Retirer le préfixe "unet."
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
@@ -41,17 +39,18 @@ except Exception as e:
     print("Could not load model:", e, "\n Try to load with UNet architecture.")
     print ("\033[0m")   # Réinitialiser la couleur
     model = UNet(3).to(device)
-    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
+    state_dict = torch.load(base_path + "models/gen_epoch_1.pth")
     new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
 
+target_model_resolution = 128
+
 transform = Compose([
-    Resize(64, interpolation=InterpolationMode.NEAREST),
+    Resize(target_model_resolution, interpolation=InterpolationMode.NEAREST),
     ToTensor(),
     Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-target_model_resolution = 64
 
 
 
@@ -64,8 +63,8 @@ class main:
         self.old_y = None
         self.pen_width = 5
         # creer une image PIL miroir du canvas pour extraction de mask
-        self.canvas_width = 128
-        self.canvas_height = 128
+        self.canvas_width = target_model_resolution
+        self.canvas_height = target_model_resolution
         self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
         self._draw = ImageDraw.Draw(self._pil_image)
         self.drawWidgets()
@@ -122,7 +121,7 @@ class main:
         self.slider.set(self.pen_width)
         self.slider.grid(row=0, column=1)
         self.controls.pack(side="left")
-        self.c = Canvas(self.master, width=128, height=128, bg=self.color_bg)
+        self.c = Canvas(self.master, width=target_model_resolution, height=target_model_resolution, bg=self.color_bg)
         self.c.pack(fill=BOTH, expand=True)
 
 

@@ -34,6 +34,7 @@ class Trainer:
             num_workers=config.get('num_workers', 4), 
             pin_memory=True
         )
+        self.mask_ratio = config['mask_ratio']
         
         # CRITICAL: Define expected image range
         self.image_range = config.get('image_range', 'tanh')  # 'tanh' or 'sigmoid'
@@ -73,135 +74,6 @@ class Trainer:
             'valid_loss': [],
             'pyramid_loss': []
         }
-        
-        # Real-time visualization setup
-        self.use_realtime_viz = config.get('realtime_viz', False)
-        if self.use_realtime_viz:
-            plt.ion()  # Enable interactive mode
-            self.fig = plt.figure(figsize=(20, 10))
-            self.gs = GridSpec(3, 5, figure=self.fig, hspace=0.3, wspace=0.3)
-            
-            # Create subplots for images
-            self.ax_input = self.fig.add_subplot(self.gs[0, 0])
-            self.ax_mask = self.fig.add_subplot(self.gs[0, 1])
-            self.ax_pred = self.fig.add_subplot(self.gs[0, 2])
-            self.ax_comp = self.fig.add_subplot(self.gs[0, 3])
-            self.ax_gt = self.fig.add_subplot(self.gs[0, 4])
-            
-            # Create subplots for loss curves
-            self.ax_loss_d = self.fig.add_subplot(self.gs[1, 0:2])
-            self.ax_loss_g = self.fig.add_subplot(self.gs[1, 2:4])
-            self.ax_loss_pixel = self.fig.add_subplot(self.gs[1, 4])
-            self.ax_loss_components = self.fig.add_subplot(self.gs[2, 0:3])
-            self.ax_loss_ratio = self.fig.add_subplot(self.gs[2, 3:5])
-            
-            # Configure axes
-            for ax in [self.ax_input, self.ax_mask, self.ax_pred, self.ax_comp, self.ax_gt]:
-                ax.axis('off')
-            
-            self.ax_input.set_title('Masked Input', fontsize=10, fontweight='bold')
-            self.ax_mask.set_title('Mask', fontsize=10, fontweight='bold')
-            self.ax_pred.set_title('Prediction', fontsize=10, fontweight='bold')
-            self.ax_comp.set_title('Composite', fontsize=10, fontweight='bold')
-            self.ax_gt.set_title('Ground Truth', fontsize=10, fontweight='bold')
-            
-            self.fig.suptitle('Training Progress', fontsize=16, fontweight='bold')
-            plt.show(block=False)
-    
-    def update_realtime_viz(self, images, masks, pred_img, comp_img, images_masked):
-        """Update the real-time visualization with current batch results."""
-        # Update images
-        self.ax_input.clear()
-        self.ax_mask.clear()
-        self.ax_pred.clear()
-        self.ax_comp.clear()
-        self.ax_gt.clear()
-        
-        self.ax_input.imshow(self.tensor_to_image(images_masked))
-        self.ax_input.set_title('Masked Input', fontsize=10, fontweight='bold')
-        self.ax_input.axis('off')
-        
-        self.ax_mask.imshow(self.tensor_to_image(masks), cmap='gray')
-        self.ax_mask.set_title('Mask (white=hole)', fontsize=10, fontweight='bold')
-        self.ax_mask.axis('off')
-        
-        self.ax_pred.imshow(self.tensor_to_image(pred_img))
-        self.ax_pred.set_title('Prediction', fontsize=10, fontweight='bold')
-        self.ax_pred.axis('off')
-        
-        self.ax_comp.imshow(self.tensor_to_image(comp_img))
-        self.ax_comp.set_title('Composite', fontsize=10, fontweight='bold')
-        self.ax_comp.axis('off')
-        
-        self.ax_gt.imshow(self.tensor_to_image(images))
-        self.ax_gt.set_title('Ground Truth', fontsize=10, fontweight='bold')
-        self.ax_gt.axis('off')
-        
-        # Update loss curves (only if we have enough data)
-        if len(self.loss_history['iters']) > 1:
-            iters = self.loss_history['iters']
-            
-            # D losses
-            self.ax_loss_d.clear()
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D'], 'b-', label='Total D', linewidth=2)
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D_real'], 'g--', label='D Real', alpha=0.7)
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D_fake'], 'r--', label='D Fake', alpha=0.7)
-            self.ax_loss_d.set_xlabel('Iteration')
-            self.ax_loss_d.set_ylabel('Loss')
-            self.ax_loss_d.set_title('Discriminator Losses')
-            self.ax_loss_d.legend(loc='upper right', fontsize=8)
-            self.ax_loss_d.grid(True, alpha=0.3)
-            
-            # G adversarial
-            self.ax_loss_g.clear()
-            self.ax_loss_g.plot(iters, self.loss_history['loss_G'], 'purple', label='Total G', linewidth=2)
-            self.ax_loss_g.plot(iters, self.loss_history['loss_G_adv'], 'orange', label='G Adversarial', alpha=0.7)
-            self.ax_loss_g.set_xlabel('Iteration')
-            self.ax_loss_g.set_ylabel('Loss')
-            self.ax_loss_g.set_title('Generator Losses')
-            self.ax_loss_g.legend(loc='upper right', fontsize=8)
-            self.ax_loss_g.grid(True, alpha=0.3)
-            
-            # Pixel losses
-            self.ax_loss_pixel.clear()
-            self.ax_loss_pixel.plot(iters, self.loss_history['hole_loss'], 'red', label='Hole', linewidth=2)
-            self.ax_loss_pixel.plot(iters, self.loss_history['valid_loss'], 'blue', label='Valid', linewidth=2)
-            if max(self.loss_history['pyramid_loss']) > 0:
-                self.ax_loss_pixel.plot(iters, self.loss_history['pyramid_loss'], 'green', label='Pyramid', linewidth=2)
-            self.ax_loss_pixel.set_xlabel('Iteration')
-            self.ax_loss_pixel.set_ylabel('Loss')
-            self.ax_loss_pixel.set_title('Reconstruction Losses')
-            self.ax_loss_pixel.legend(loc='upper right', fontsize=8)
-            self.ax_loss_pixel.grid(True, alpha=0.3)
-            
-            # All components
-            self.ax_loss_components.clear()
-            self.ax_loss_components.plot(iters, self.loss_history['loss_G_adv'], label='Adversarial', linewidth=1.5)
-            self.ax_loss_components.plot(iters, self.loss_history['hole_loss'], label='Hole', linewidth=1.5)
-            self.ax_loss_components.plot(iters, self.loss_history['valid_loss'], label='Valid', linewidth=1.5)
-            if max(self.loss_history['pyramid_loss']) > 0:
-                self.ax_loss_components.plot(iters, self.loss_history['pyramid_loss'], label='Pyramid', linewidth=1.5)
-            self.ax_loss_components.set_xlabel('Iteration')
-            self.ax_loss_components.set_ylabel('Loss')
-            self.ax_loss_components.set_title('All Loss Components')
-            self.ax_loss_components.legend(loc='upper right', fontsize=8)
-            self.ax_loss_components.grid(True, alpha=0.3)
-            
-            # D/G ratio (indicator of training balance)
-            self.ax_loss_ratio.clear()
-            d_losses = np.array(self.loss_history['loss_D'])
-            g_adv_losses = np.array(self.loss_history['loss_G_adv'])
-            ratio = d_losses / (g_adv_losses + 1e-8)
-            self.ax_loss_ratio.plot(iters, ratio, 'purple', linewidth=2)
-            self.ax_loss_ratio.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, label='Balance')
-            self.ax_loss_ratio.set_xlabel('Iteration')
-            self.ax_loss_ratio.set_ylabel('Ratio')
-            self.ax_loss_ratio.set_title('D_loss / G_adv_loss Ratio')
-            self.ax_loss_ratio.legend(loc='upper right', fontsize=8)
-            self.ax_loss_ratio.grid(True, alpha=0.3)
-        
-        plt.draw()
-        plt.pause(0.001)  # Small pause to update display
     
     def train_epoch(self):
         for images, *_ in self.dataloader:
@@ -216,7 +88,7 @@ class Trainer:
             images, fill_value = normalize_images(self.image_range, images)
             
             # Create masks: 1=hole, 0=valid
-            masks = create_mask(B, H, W, device=self.device)
+            masks = create_mask(B, H, W, device=self.device, mask_ratio = self.mask_ratio)
             
             # Build input: masked image + mask channel
             images_masked = images * (1 - masks) + fill_value * masks
@@ -284,10 +156,6 @@ class Trainer:
                       f"adv: {loss_G_adv.item():.4f} hole: {hole_loss.item():.4f} "
                       f"valid: {valid_loss.item():.4f} pyr: {pyramid_loss.item():.4f}")
             
-            # Real-time visualization update
-            if self.use_realtime_viz and self.iters % self.config.get('viz_update_freq', 50) == 0:
-                self.update_realtime_viz(images, masks, pred_img, comp_img, images_masked)
-
     def save_metrics(self, filepath):
         """Save training metrics to CSV."""
         os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
@@ -303,7 +171,7 @@ class Trainer:
 
     def plot_metrics(self, filepath=None):
         """Plot training metrics."""
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         fig.suptitle('Training Metrics', fontsize=16)
         
         iters = self.loss_history['iters']
@@ -315,23 +183,16 @@ class Trainer:
         axes[0, 0].set_title('Discriminator Loss')
         axes[0, 0].grid(True)
         axes[0, 0].legend()
-        
-        # D real vs fake
-        axes[0, 1].plot(iters, self.loss_history['loss_D_real'], label='D Real', linewidth=2)
-        axes[0, 1].plot(iters, self.loss_history['loss_D_fake'], label='D Fake', linewidth=2)
+
+        # Combined G loss components
+        axes[0, 1].plot(iters, self.loss_history['loss_G_adv'], label='Adversarial', linewidth=2)
+        axes[0, 1].plot(iters, self.loss_history['hole_loss'], label='Hole', linewidth=2)
+        axes[0, 1].plot(iters, self.loss_history['valid_loss'], label='Valid', linewidth=2)
         axes[0, 1].set_xlabel('Iteration')
         axes[0, 1].set_ylabel('Loss')
-        axes[0, 1].set_title('Discriminator Real vs Fake')
+        axes[0, 1].set_title('G Loss Components')
         axes[0, 1].grid(True)
         axes[0, 1].legend()
-        
-        # G adversarial loss
-        axes[0, 2].plot(iters, self.loss_history['loss_G_adv'], label='G Adversarial', linewidth=2, color='orange')
-        axes[0, 2].set_xlabel('Iteration')
-        axes[0, 2].set_ylabel('Loss')
-        axes[0, 2].set_title('Generator Adversarial Loss')
-        axes[0, 2].grid(True)
-        axes[0, 2].legend()
         
         # Total G loss
         axes[1, 0].plot(iters, self.loss_history['loss_G'], label='Total G Loss', linewidth=2, color='green')
@@ -351,15 +212,6 @@ class Trainer:
         axes[1, 1].grid(True)
         axes[1, 1].legend()
         
-        # Combined G loss components
-        axes[1, 2].plot(iters, self.loss_history['loss_G_adv'], label='Adversarial', linewidth=2)
-        axes[1, 2].plot(iters, self.loss_history['hole_loss'], label='Hole', linewidth=2)
-        axes[1, 2].plot(iters, self.loss_history['valid_loss'], label='Valid', linewidth=2)
-        axes[1, 2].set_xlabel('Iteration')
-        axes[1, 2].set_ylabel('Loss')
-        axes[1, 2].set_title('G Loss Components')
-        axes[1, 2].grid(True)
-        axes[1, 2].legend()
         
         plt.tight_layout()
         
@@ -375,29 +227,30 @@ class Trainer:
         torch.save(self.netD.state_dict(), pathD)
 
     def train(self):
-        try:
-            while self.iters < self.max_iters:
-                self.train_epoch()
-                
-                if self.iters % 5000 == 0:  # Save less frequently
-                    pathG = f"{self.config.get('save_dir', './')}/gen_iter_{self.iters}.pth"
-                    pathD = f"{self.config.get('save_dir', './')}/disc_iter_{self.iters}.pth"
-                    self.save_models(pathG, pathD)
-                    print(f"Saved models at iteration {self.iters}")
+        pathG = f"{self.config.get('save_dir', './')}/gen_final.pth"
+        pathD = f"{self.config.get('save_dir', './')}/disc_final.pth"
 
-                    save_dir = self.config.get('save_dir', './')
-                    metrics_csv = f"{save_dir}/training_metrics.csv"
-                    self.save_metrics(metrics_csv)
+        epoch = 0;
+        current_save_count = 0
+        max_save_count = 10
+        while self.iters < self.max_iters:
+            epoch += 1
+            self.train_epoch()
             
-            # Final save
-            pathG = f"{self.config.get('save_dir', './')}/gen_final.pth"
-            pathD = f"{self.config.get('save_dir', './')}/disc_final.pth"
-            self.save_models(pathG, pathD)
-            
-            save_dir = self.config.get('save_dir', './')
-            metrics_plot = f"{save_dir}/training_curves.png"
-            self.plot_metrics(metrics_plot)
-            print("Training finished")
-        finally:
-            # Always close visualization window if it was opened
-            print("Je devrais gérer un cas ici")
+            if((self.max_iters / self.iters) * max_save_count >= current_save_count):
+                pathG = f"{self.config.get('save_dir', './')}/gen_epoch_{epoch}.pth"
+                pathD = f"{self.config.get('save_dir', './')}/disc_epoch_{epoch}.pth"
+                self.save_models(pathG, pathD)
+                print(f"Saved models at epoch {epoch}")
+
+                save_dir = self.config.get('save_dir', './')
+                metrics_csv = f"{save_dir}/training_metrics.csv"
+                self.save_metrics(metrics_csv)
+                self.save_models(pathG, pathD)
+
+                save_dir = self.config.get('save_dir', './')
+                metrics_plot = f"{save_dir}/training_curves.png"
+
+        self.plot_metrics(metrics_plot)
+        print("Training finished")
+        

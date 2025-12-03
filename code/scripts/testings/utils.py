@@ -21,21 +21,37 @@ def draw_line(mask_channel, x1, y1, x2, y2, thickness):
         y1_clip = min(mask_channel.shape[0], y + thickness)
         mask_channel[y0:y1_clip, x0:x1_clip] = 0
 
-def create_mask(batch_size, H, W, device):
+def create_mask(batch_size, H, W, device, mask_ratio):
     """Create random line masks.
     Returns: tensor (B, 1, H, W) where 1=hole, 0=valid
     """
     mask = torch.ones((batch_size, 1, H, W), device=device)
 
+    target_area = int(mask_ratio * H * W)
+
     for b in range(batch_size):
-        n_lines = torch.randint(1, 4, (1,)).item()  # 1-3 lines
-        for _ in range(n_lines):
+        covered_area = 0
+
+        while covered_area < target_area:
+            # Génération aléatoire d’un trait
             x1 = torch.randint(0, W, (1,)).item()
             y1 = torch.randint(0, H, (1,)).item()
             x2 = torch.randint(0, W, (1,)).item()
             y2 = torch.randint(0, H, (1,)).item()
+
             thickness = torch.randint(3, 10, (1,)).item()
+
+            # Avant de dessiner, sauvegarder pour connaître ce que le trait rajoute
+            old_mask = mask[b, 0].clone()
+
+            # Dessiner le trait
             draw_line(mask[b, 0], x1, y1, x2, y2, thickness)
+
+            # Calcul du gain de surface
+            new_mask = mask[b, 0]
+            added = (old_mask - new_mask).clamp(min=0).sum().item()
+
+            covered_area += added
 
     # After draw_line: 0=hole, 1=valid
     # We want: 1=hole, 0=valid
