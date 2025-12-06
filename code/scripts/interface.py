@@ -580,35 +580,23 @@ class ImprovedMaskingApp:
             final_display = to_img(final_result)
             
             # Afficher les résultats
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            fig, axes = plt.subplots(1, 4, figsize=(15, 10))
             
-            axes[0, 0].imshow(img_display)
-            axes[0, 0].set_title("Image Originale", fontsize=12, fontweight='bold')
-            axes[0, 0].axis('off')
+            axes[0].imshow(img_display)
+            axes[0].set_title("Image Originale", fontsize=12, fontweight='bold')
+            axes[0].axis('off')
             
-            axes[0, 1].imshow(masked_display)
-            axes[0, 1].set_title("Image Masquée", fontsize=12, fontweight='bold')
-            axes[0, 1].axis('off')
+            axes[1].imshow(masked_display)
+            axes[1].set_title("Image Masquée", fontsize=12, fontweight='bold')
+            axes[1].axis('off')
+
+            axes[2].imshow(recon_display)
+            axes[2].set_title("Reconstruction Complète", fontsize=12, fontweight='bold')
+            axes[2].axis('off')
             
-            axes[0, 2].imshow(np.array(self.mask_image), cmap='gray')
-            axes[0, 2].set_title("Masque", fontsize=12, fontweight='bold')
-            axes[0, 2].axis('off')
-            
-            axes[1, 0].imshow(recon_display)
-            axes[1, 0].set_title("Reconstruction Complète", fontsize=12, fontweight='bold')
-            axes[1, 0].axis('off')
-            
-            axes[1, 1].imshow(final_display)
-            axes[1, 1].set_title("Résultat Final", fontsize=12, fontweight='bold')
-            axes[1, 1].axis('off')
-            
-            # Différence
-            img_arr = np.array(img_display) if not isinstance(img_display, np.ndarray) else img_display
-            final_arr = np.array(final_display) if not isinstance(final_display, np.ndarray) else final_display
-            diff = np.abs(img_arr.astype(float) - final_arr.astype(float))
-            axes[1, 2].imshow(diff.astype(np.uint8))
-            axes[1, 2].set_title("Différence", fontsize=12, fontweight='bold')
-            axes[1, 2].axis('off')
+            axes[3].imshow(final_display)
+            axes[3].set_title("Résultat Final", fontsize=12, fontweight='bold')
+            axes[3].axis('off')
             
             plt.tight_layout()
             plt.show()
