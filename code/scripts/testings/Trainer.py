@@ -107,6 +107,7 @@ class Trainer:
             
             self.fig.suptitle('Training Progress', fontsize=16, fontweight='bold')
             plt.show(block=False)
+        self.best_loss = float('inf')
     
     def update_realtime_viz(self, images, masks, pred_img, comp_img, images_masked):
         """Update the real-time visualization with current batch results."""
@@ -199,7 +200,7 @@ class Trainer:
             self.ax_loss_ratio.set_title('D_loss / G_adv_loss Ratio')
             self.ax_loss_ratio.legend(loc='upper right', fontsize=8)
             self.ax_loss_ratio.grid(True, alpha=0.3)
-        
+
         plt.draw()
         plt.pause(0.001)  # Small pause to update display
     
@@ -282,7 +283,15 @@ class Trainer:
                 print(f"[iter {self.iters}/{self.max_iters}] "
                       f"D: {loss_D.item():.4f} G: {loss_G.item():.4f} "
                       f"adv: {loss_G_adv.item():.4f} hole: {hole_loss.item():.4f} "
-                      f"valid: {valid_loss.item():.4f} pyr: {pyramid_loss.item():.4f}")
+                      f"valid: {valid_loss.item():.4f} pyr: {pyramid_loss.item():.4f}\n")
+
+            if loss_G < self.best_loss:
+                self.best_loss = loss_G.item()
+                # Save best model
+                pathG = f"{self.config.get('save_dir', './')}/gen_best.pth"
+                pathD = f"{self.config.get('save_dir', './')}/disc_best.pth"
+                self.save_models(pathG, pathD)
+                print(f"New best model saved at iter {self.iters} with G loss {loss_G.item():.4f}\n")
             
             # Real-time visualization update
             if self.use_realtime_viz and self.iters % self.config.get('viz_update_freq', 50) == 0:
@@ -378,16 +387,15 @@ class Trainer:
         try:
             while self.iters < self.max_iters:
                 self.train_epoch()
-                
-                if self.iters % 5000 == 0:  # Save less frequently
-                    pathG = f"{self.config.get('save_dir', './')}/gen_iter_{self.iters}.pth"
-                    pathD = f"{self.config.get('save_dir', './')}/disc_iter_{self.iters}.pth"
-                    self.save_models(pathG, pathD)
-                    print(f"Saved models at iteration {self.iters}")
 
-                    save_dir = self.config.get('save_dir', './')
-                    metrics_csv = f"{save_dir}/training_metrics.csv"
-                    self.save_metrics(metrics_csv)
+                pathG = f"{self.config.get('save_dir', './')}/gen_iter_{self.iters}.pth"
+                pathD = f"{self.config.get('save_dir', './')}/disc_iter_{self.iters}.pth"
+                self.save_models(pathG, pathD)
+                print(f"Saved models at iteration {self.iters}")
+
+                save_dir = self.config.get('save_dir', './')
+                metrics_csv = f"{save_dir}/training_metrics.csv"
+                self.save_metrics(metrics_csv)
             
             # Final save
             pathG = f"{self.config.get('save_dir', './')}/gen_final.pth"

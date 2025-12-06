@@ -2,13 +2,16 @@ import kagglehub
 from torch.utils.data import Dataset
 import os
 import matplotlib.pyplot as plt
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
+from torchvision.datasets import ImageFolder
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode, RandomCrop, \
+    RandomHorizontalFlip
 import torchvision
 import torch
 from tqdm import tqdm
 from PIL import Image
 import math
 
+from pennet import InpaintGeneratorPennet
 from model import PenNET, InpaintGenerator
 from utils import create_mask, to_img
 
@@ -25,22 +28,22 @@ config = {
     'lr': 1e-4,
     'beta1': 0.5, # valeur classique pour Adam dans les GANs
     'beta2': 0.999, # valeur classique pour Adam dans les GANs
-    'batch_size': 64,
-    "total_epochs": 1,
-    'd2glr': 1.0,                  # lr ratio D/G
+    'batch_size': 12,
+    "total_epochs": 10,
+    'd2glr': 0.05,                  # lr ratio D/G
     'num_workers': 16,             # nombre de "threads" pour le DataLoader
     'save_dir': base_path + "models",
     'current_model_name': 'epoch_1',
 
     'image_range': 'tanh',
-    'adversarial_weight': 0.1,
+    'adversarial_weight': 0.01,
     'hole_weight': 6.0, # poids de la loss dans la zone masquée plus important que dans la zone valide car on veut bien remplir les trous
-    'valid_weight': 1.0,
-    'pyramid_weight': 0.5,
+    'valid_weight': 5.0,
+    'pyramid_weight': 0.05,
 
     "mask_ratio" : 0.5,
     "train": False,
-    "dataset_images_size": 64
+    "dataset_images_size": 512
 }
 
 
@@ -163,8 +166,25 @@ def train_gan():
     print("reserved: ", torch.cuda.memory_reserved()/1024**2, "MiB")
 
     # ---------- dataset / dataloader ----------
-    transform = Compose([
-        Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),            # redimensionne l’image (par exemple à 286, plus grand que 256)
+    train_transform = Compose([
+        # Option A (classique pour inpainting): resize un peu plus grand puis random crop
+        Resize(286, interpolation=InterpolationMode.BILINEAR),  # agrandir un peu
+        RandomCrop(256),  # recadrage aléatoire -> variabilité
+        RandomHorizontalFlip(p=0.5),
+        ToTensor(),
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # -> range [-1,1] (tanh)
+    ])
+
+    # Changer le transform car les images sont en 178 x 218 et comme c'est des visages on va juste les recadrer en 160 x 160 au centre
+    train_transform = Compose([
+        RandomCrop(128),  # recadrage aléatoire -> variabilité
+        ToTensor(),
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # -> range [-1,1] (tanh)
+    ])
+
+
+    val_transform = Compose([
+        Resize(256, interpolation=InterpolationMode.BILINEAR),
         ToTensor(),
         Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
@@ -172,8 +192,8 @@ def train_gan():
     # path = kagglehub.dataset_download("ashwingupta3012/human-faces")
     # train_dataset = HumanFacesDataset(os.path.join(path, "Humans"), transform=transform)
     # train_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=True, download=True, transform=transform)
-    train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=transform)
-
+    # train_dataset = torchvision.datasets.Places365(base_path + "data", split='train-standard', small=True, download=True, transform=train_transform)
+    train_dataset = ImageFolder(root=base_path + "data/DatasetCustom", transform=train_transform)
     # ensure save dir
     os.makedirs(config['save_dir'], exist_ok=True)
 
@@ -191,10 +211,26 @@ def test_model_gen():
     base_path = "../../"
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = InpaintGenerator(PenNET(3)).to(device)
 
-    state_dict = torch.load(base_path + f"models/gen_{config['current_model_name']}.pth")
-    model.load_state_dict(state_dict)
+    # Charger le checkpoint
+    checkpoint = torch.load(base_path + f"models/gen_celbAAlreadyTrained.pth", map_location=device)
+
+    # Extraire le state_dict de la clé 'netG'
+    state_dict = checkpoint['netG']
+
+    # Nettoyer les préfixes
+    cleaned_state = {}
+    for k, v in state_dict.items():
+        nk = k
+        for prefix in ['module.', 'unet.', 'generator.', 'model.', 'net.']:
+            if nk.startswith(prefix):
+                nk = nk[len(prefix):]
+                break
+        cleaned_state[nk] = v
+
+    # Créer et charger le modèle
+    model = InpaintGeneratorPennet(init_weights=False).to(device)
+    model.load_state_dict(cleaned_state, strict=False)
 
     transform = Compose([
         Resize(config['dataset_images_size'], interpolation=InterpolationMode.NEAREST),
@@ -206,8 +242,15 @@ def test_model_gen():
     # DATA_DIR = base_path + 'data/test-images'
     # val_dataset = torchvision.datasets.ImageFolder(DATA_DIR, transform=transform)
     #val_dataset = torchvision.datasets.Places365(base_path + "data", split='val', download=True, small=True, transform=transform)
+    val_transform = Compose([
+        RandomCrop(128),  # recadrage aléatoire -> variabilité
+        ToTensor(),
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # -> range [-1,1] (tanh)
+    ])
+
 
     val_dataset = torchvision.datasets.CIFAR10(base_path + "data", train=False, download=True, transform=transform)
+    #val_dataset = ImageFolder(root=base_path + "data/DatasetCustom", transform=val_transform)
     dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=8)
 
     img_tensor, _ = next(iter(dataloader))
@@ -230,7 +273,7 @@ def test_model_gen():
 
     model.eval()
     with torch.no_grad():
-        feats, reconstructed = model(net_input,mask)
+        pyramid_imgs, reconstructed = model(net_input, mask)
 
     fig, ax = plt.subplots(1, 4, figsize=(12,4))
     ax[0].imshow(to_img(img_tensor))
@@ -260,6 +303,4 @@ def test_model_gen():
 if(config["train"]):
     train_gan()
 for i in range(10):
-    test_model_gen()
-
-
+   test_model_gen()
