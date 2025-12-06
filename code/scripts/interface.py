@@ -101,8 +101,8 @@ class ImprovedMaskingApp:
         
         # Canvas principal
         self.canvas = Canvas(self.master, width=self.canvas_width, height=self.canvas_height, bg=self.color_bg, cursor='crosshair')
-        self.canvas.pack(fill=BOTH, expand=True)
-        
+        self.canvas.pack(fill="both", expand=True)
+
         # Menu
         self.setup_menu()
 
@@ -173,6 +173,18 @@ class ImprovedMaskingApp:
         bbox = [ix - img_radius, iy - img_radius, ix + img_radius, iy + img_radius]
         draw.ellipse(bbox, fill=fill_value)
 
+    def erase_circle_on_mask(self, cx, cy, radius):
+        """Efface (met à 0) un cercle sur le masque à la résolution native"""
+        if self.mask_image is None:
+            return
+        ix, iy = self.canvas_to_image_coords(cx, cy)
+        if ix is None or iy is None:
+            return
+        img_radius = max(1, int(round(radius / max(self.view_scale, 1e-6))))
+        draw = ImageDraw.Draw(self.mask_image)
+        bbox = [ix - img_radius, iy - img_radius, ix + img_radius, iy + img_radius]
+        draw.ellipse(bbox, fill=0)
+
     def start_draw(self, event):
         """Commence le dessin"""
         self.old_x = event.x
@@ -181,10 +193,10 @@ class ImprovedMaskingApp:
         self.draw_point(event.x, event.y, self.color_fg, 255)
 
     def start_erase(self, event):
-        """Commence l'effacement"""
+        """Commence l'effacement: supprimer uniquement le masque sans peindre"""
         self.old_x = event.x
         self.old_y = event.y
-        self.draw_point(event.x, event.y, self.color_bg, 0)
+        self.erase_point(event.x, event.y)
 
     def draw(self, event):
         """Dessine en continu"""
@@ -194,11 +206,46 @@ class ImprovedMaskingApp:
         self.old_y = event.y
 
     def erase(self, event):
-        """Efface en continu"""
+        """Efface en continu: supprime les objets 'mask_draw' et remet à 0 dans mask_image"""
         if self.old_x is not None and self.old_y is not None:
-            self.draw_line(self.old_x, self.old_y, event.x, event.y, self.color_bg, 0)
+            self.erase_line(self.old_x, self.old_y, event.x, event.y)
         self.old_x = event.x
         self.old_y = event.y
+
+    def erase_point(self, x, y):
+        """Efface localement le masque au point (clic droit)"""
+        r = self.pen_width / 2
+        # Supprimer du canvas uniquement les éléments du masque et effacer leur empreinte dans mask_image
+        for item in self.canvas.find_overlapping(int(x - r), int(y - r), int(x + r), int(y + r)):
+            tags = self.canvas.gettags(item)
+            if 'mask_draw' in tags:
+                # Récupérer les coordonnées de l'ellipse dessinée sur le canvas
+                coords = self.canvas.coords(item)
+                if len(coords) >= 4 and self.mask_image is not None:
+                    cx1, cy1, cx2, cy2 = coords[:4]
+                    # Convertir le rectangle du canvas en coordonnées image
+                    ix1, iy1 = self.canvas_to_image_coords(cx1, cy1)
+                    ix2, iy2 = self.canvas_to_image_coords(cx2, cy2)
+                    if None not in (ix1, iy1, ix2, iy2):
+                        draw = ImageDraw.Draw(self.mask_image)
+                        # Effacer précisément l'ellipse correspondante
+                        draw.ellipse([ix1, iy1, ix2, iy2], fill=0)
+                # Supprimer l'objet du canvas
+                self.canvas.delete(item)
+        # Mettre à jour le masque image au point courant (sécurité pour continuité)
+        self.erase_circle_on_mask(x, y, r)
+
+    def erase_line(self, x1, y1, x2, y2):
+        """Efface une ligne continue sur le masque en supprimant les dessins et en mettant à 0 le masque"""
+        dx = x2 - x1
+        dy = y2 - y1
+        distance = max(1, int(np.sqrt(dx*dx + dy*dy)))
+        steps = max(1, int(distance / (self.pen_width / 4)))
+        for i in range(steps + 1):
+            t = i / max(steps, 1)
+            x = x1 + t * dx
+            y = y1 + t * dy
+            self.erase_point(x, y)
 
     def draw_point(self, x, y, color, mask_value):
         """Dessine un point (cercle) sur le canvas et le masque"""
