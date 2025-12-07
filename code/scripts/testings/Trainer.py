@@ -170,7 +170,7 @@ class Trainer:
             images, fill_value = normalize_images(self.image_range, images)
             
             # Create masks
-            masks = create_mask_fast(B, H, W, device=self.device)
+            masks = create_mask_fast(B, H, W, device=self.device, num_lines_range=self.config['mask_line_count'], thickness_range=self.config['mask_line_width'])
             
             # Build input
             images_masked = images * (1 - masks) + fill_value * masks
@@ -265,6 +265,10 @@ class Trainer:
                 checkpoint_path = f"{save_dir}/checkpoint_iter_{self.iters}.pth"
                 self.save_checkpoint(checkpoint_path)
         pbar.close()
+
+    def save_models(self, pathG, pathD):
+        torch.save(self.netG.state_dict(), pathG)
+        torch.save(self.netD.state_dict(), pathD)
 
     def save_metrics(self, filepath):
         """Save training metrics to CSV."""

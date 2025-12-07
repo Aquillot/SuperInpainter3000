@@ -28,13 +28,13 @@ config = {
     'lr': 1e-4,
     'beta1': 0.5, # valeur classique pour Adam dans les GANs
     'beta2': 0.999, # valeur classique pour Adam dans les GANs
-    'batch_size': 32,
+    'batch_size': 1024,
     'pixel_loss': 'l2',
     "total_epochs": 5,
     'd2glr': 0.05,                  # lr ratio D/G
     'num_workers': 16,             # nombre de "threads" pour le DataLoader
     'save_dir': base_path + "models",
-    'current_model_name': 'gen_epoch_14_256_adv01.pth',
+    'current_model_name': 'test.pth',
 
     'image_range': 'tanh',
     'adversarial_weight': 0.01,
@@ -42,9 +42,11 @@ config = {
     'valid_weight': 5.0,
     'pyramid_weight': 0.05,
 
-    "mask_ratio" : 0.5,
+    # Faire des tests avant de train, les dimmensions peuvent etre mauvaises
+    "mask_line_width" : (1, 7),
+    "mask_line_count" : (1, 2),
     "train": False,
-    "dataset_images_size": 256,
+    "dataset_images_size": 32,
     "state_dict_G_path": None,
     "state_dict_D_path": None,
     "resume_checkpoint_path": None,
@@ -250,8 +252,9 @@ def train_gan(resume_checkpoint=None):
     trainer.train()
 
     # ---------- save final models ----------
-    trainer.save_models(base_path + f"models/gen_{config['current_model_name']}.pth",
-                        base_path + f"models/disc_{config['current_model_name']}.pth")
+    print("Training finished")
+    trainer.save_models(base_path + f"models/gen_{config['current_model_name']}",
+                        base_path + f"models/disc_{config['current_model_name']}")
     print("Saved final models in", config['save_dir'])
 
 
@@ -261,7 +264,7 @@ def test_model_gen():
 
 
     # Charger le checkpoint
-    checkpoint = torch.load(base_path + f"models/{config["current_model_name"]}", map_location=device)
+    checkpoint = torch.load(base_path + f"models/gen_{config["current_model_name"]}", map_location=device)
 
     # Extraire le state_dict de la clé 'netG'
     state_dict = None
@@ -313,7 +316,7 @@ def test_model_gen():
     img_tensor, _ = next(iter(dataloader))
     img_tensor = img_tensor.to(device)
     B, C, H, W = img_tensor.shape
-    mask = create_mask_fast(B, H, W, device)
+    mask = create_mask_fast(B, H, W, device, thickness_range=config['mask_line_width'])
     # mask = 1.0 - mask  # now 1=hole, 0=valid
 
     # choose fill_value consistent with normalization

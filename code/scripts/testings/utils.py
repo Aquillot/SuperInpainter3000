@@ -43,11 +43,19 @@ def create_mask(batch_size, H, W, device):
     return mask
 
 
-def create_mask_fast(batch_size, H, W, device, num_lines_range=(1, 4), thickness_range=(7, 25)):
+def create_mask_fast(batch_size, H, W, device, num_lines_range=None, thickness_range=None):
     """
     Version optimisée qui traite ligne par ligne mais garde la vectorisation sur le batch.
     Utilise moins de mémoire que la version complète.
     """
+
+    if thickness_range is None:
+        thickness_range = (int((H + W) * 0.08), int((H + W) * 0.2))
+    if((H+W) * 0.5 <= 64 and num_lines_range is None):
+        num_lines_range = (1, 2)
+    elif(num_lines_range is not None):
+        num_lines_range=(1, 4)
+
     mask = torch.zeros((batch_size, 1, H, W), device=device)
     
     # Créer la grille une seule fois
