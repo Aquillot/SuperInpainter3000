@@ -11,7 +11,7 @@ from tqdm import tqdm
 from PIL import Image
 import math
 
-from pennet import InpaintGeneratorPennet
+#from ..pennet import InpaintGeneratorPennet
 from model import PenNET, InpaintGenerator
 from utils import create_mask, to_img
 
@@ -42,8 +42,10 @@ config = {
     'pyramid_weight': 0.05,
 
     "mask_ratio" : 0.5,
-    "train": False,
-    "dataset_images_size": 512
+    "train": True,
+    "dataset_images_size": 512,
+    "state_dict_G_path": None,
+    "state_dict_D_path": None,
 }
 
 
@@ -198,8 +200,36 @@ def train_gan():
     os.makedirs(config['save_dir'], exist_ok=True)
 
     # ---------- instantiate trainer and train ----------
-    trainer = Trainer(config, train_dataset, PenNET(3))
+    trainer = Trainer(config, train_dataset, UNet(3))
+    # Load state dicts if provided
+    new_state_dict_G = None
+    new_state_dict_D = None
     print("Starting training with TrainerSimple...")
+    if config["state_dict_G_path"] is not None:
+        state_dict_G = torch.load(base_path+config["state_dict_G_path"], map_location=config['device'])
+        # Clenaing keys if necessary
+        new_state_dict_G = {}
+        for k, v in state_dict_G.items():
+            nk = k
+            for prefix in ['module.', 'unet.', 'generator.', 'model.', 'net.']:
+                if nk.startswith(prefix):
+                    nk = nk[len(prefix):]
+                    break
+            new_state_dict_G[nk] = v
+    if config["state_dict_D_path"] is not None:
+        state_dict_D = torch.load(base_path+config["state_dict_D_path"], map_location=config['device'])
+        # Clenaing keys if necessary
+        new_state_dict_D = {}
+        for k, v in state_dict_D.items():
+            nk = k
+            for prefix in ['module.', 'discriminator.', 'model.']:
+                if nk.startswith(prefix):
+                    nk = nk[len(prefix):]
+                    break
+            new_state_dict_D[nk] = v
+
+    trainer.load_models(new_state_dict_G, new_state_dict_D)
+
     trainer.train()
 
     # ---------- save final models ----------
@@ -213,10 +243,10 @@ def test_model_gen():
 
 
     # Charger le checkpoint
-    checkpoint = torch.load(base_path + f"models/gen_celbAAlreadyTrained.pth", map_location=device)
+    checkpoint = torch.load(base_path + f"models/gen_"+config["current_model_name"]+".pth", map_location=device)
 
     # Extraire le state_dict de la clé 'netG'
-    state_dict = checkpoint['netG']
+    state_dict = checkpoint['netG'] if 'netG' in checkpoint else checkpoint
 
     # Nettoyer les préfixes
     cleaned_state = {}
@@ -229,7 +259,7 @@ def test_model_gen():
         cleaned_state[nk] = v
 
     # Créer et charger le modèle
-    model = InpaintGeneratorPennet(init_weights=False).to(device)
+    model = PenNET(init_weights=False).to(device)
     model.load_state_dict(cleaned_state, strict=False)
 
     transform = Compose([
@@ -300,7 +330,7 @@ def test_model_gen():
     plt.show()
 
 
-if(config["train"]):
+if config["train"]:
     train_gan()
 for i in range(10):
    test_model_gen()

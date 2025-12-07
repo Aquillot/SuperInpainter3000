@@ -88,11 +88,11 @@ class ImprovedMaskingApp:
         # Boutons principaux
         btn_config = {'width': 18, 'pady': 5}
         
-        Button(self.controls, text='📁 Charger Image', command=self.load_image, **btn_config).grid(row=4, column=0, columnspan=2, pady=(15, 5))
-        Button(self.controls, text='🤖 Sélectionner Modèle', command=self.select_model_dialog, **btn_config).grid(row=5, column=0, columnspan=2, pady=5)
-        Button(self.controls, text='✨ Appliquer Masque', command=self.apply_mask, **btn_config).grid(row=6, column=0, columnspan=2, pady=5)
-        Button(self.controls, text='🗑️ Effacer Masque', command=self.clear_mask, **btn_config).grid(row=7, column=0, columnspan=2, pady=5)
-        Button(self.controls, text='🔄 Réinitialiser Tout', command=self.clear_all, **btn_config).grid(row=8, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Charger Image', command=self.load_image, **btn_config).grid(row=4, column=0, columnspan=2, pady=(15, 5))
+        Button(self.controls, text='Sélectionner Modèle', command=self.select_model_dialog, **btn_config).grid(row=5, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Appliquer Masque', command=self.apply_mask, **btn_config).grid(row=6, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Effacer Masque', command=self.clear_mask, **btn_config).grid(row=7, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Réinitialiser Tout', command=self.clear_all, **btn_config).grid(row=8, column=0, columnspan=2, pady=5)
         
         # Info sur le modèle chargé
         Label(self.controls, text='Modèle:', font='Georgia 10').grid(row=9, column=0, columnspan=2, pady=(15, 0))
@@ -296,7 +296,7 @@ class ImprovedMaskingApp:
             # Afficher l'image
             self.display_image()
             
-            print(f"✅ Image chargée: {w}x{h} pixels")
+            print(f"Image chargée: {w}x{h} pixels")
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de charger l'image:\n{e}")
 
@@ -353,7 +353,7 @@ class ImprovedMaskingApp:
         if self.loaded_image is not None:
             w, h = self.loaded_image.size
             self.mask_image = Image.new('L', (w, h), 0)
-        print("🗑️ Masque effacé")
+        print("Masque effacé")
 
     def clear_all(self):
         """Réinitialise tout"""
@@ -362,7 +362,7 @@ class ImprovedMaskingApp:
         self.mask_image = None
         self.canvas_image_id = None
         self.display_tk_image = None
-        print("🔄 Tout réinitialisé")
+        print("Tout réinitialisé")
 
     def save_mask(self):
         """Sauvegarde le masque"""
@@ -376,7 +376,7 @@ class ImprovedMaskingApp:
         )
         if filename:
             self.mask_image.save(filename)
-            print(f"💾 Masque sauvegardé: {filename}")
+            print(f"Masque sauvegardé: {filename}")
 
     def change_fg(self):
         """Change la couleur du pinceau"""
@@ -435,7 +435,7 @@ class ImprovedMaskingApp:
             for key in ['netG', 'generator', 'state_dict', 'model_state_dict', 'gen_state_dict']:
                 if key in checkpoint:
                     state_dict = checkpoint[key]
-                    print(f"📦 State_dict trouvé dans la clé: '{key}'")
+                    print(f"State_dict trouvé dans la clé: '{key}'")
                     break
             else:
                 # Si aucune clé connue, utiliser directement le checkpoint
@@ -461,13 +461,13 @@ class ImprovedMaskingApp:
         # Essayer de charger avec différentes architectures
         architectures = [
             ("PENNet", lambda: InpaintGeneratorPennet(init_weights=False)),
-            ("PenNET/InpaintGenerator", lambda: InpaintGenerator(PenNET(3))),
+            ("PenNET/InpaintGenerator", lambda: PenNET(3)),
             ("UNet", lambda: UNet(3))
         ]
         
         for arch_name, model_builder in architectures:
             try:
-                print(f"🔄 Tentative de chargement avec {arch_name}...")
+                print(f"Tentative de chargement avec {arch_name}...")
                 candidate = model_builder().to(device)
                 candidate.load_state_dict(cleaned_state, strict=False)
                 
@@ -487,13 +487,13 @@ class ImprovedMaskingApp:
                     model_name = path.split('/')[-1]
                     self.selected_model_path = path
                     self.model_label.config(text=f'{model_name}\n({arch_name})', fg='green')
-                    print(f"✅ Modèle chargé avec {arch_name} ({match_ratio*100:.1f}% correspondance)")
+                    print(f"Modèle chargé avec {arch_name} ({match_ratio*100:.1f}% correspondance)")
                     return
                 else:
-                    print(f"⚠️ {arch_name}: Trop peu de paramètres correspondent ({match_ratio*100:.1f}%)")
+                    print(f"{arch_name}: Trop peu de paramètres correspondent ({match_ratio*100:.1f}%)")
                     
             except Exception as e:
-                print(f"❌ {arch_name} échec: {str(e)[:100]}")
+                print(f"{arch_name} échec: {str(e)[:100]}")
                 continue
         
         # Si aucune architecture n'a fonctionné
@@ -502,7 +502,7 @@ class ImprovedMaskingApp:
             f"Aucune architecture compatible trouvée.\n"
             f"Clés disponibles dans le state_dict:\n{list(cleaned_state.keys())[:5]}..."
         )
-        print("❌ Échec du chargement avec toutes les architectures")
+        print("Échec du chargement avec toutes les architectures")
 
     def get_mask_tensor(self):
         """Convertit le masque PIL en tensor PyTorch"""
@@ -531,7 +531,7 @@ class ImprovedMaskingApp:
             return
         
         try:
-            print("🔄 Application du masque...")
+            print("Application du masque...")
             
             # Transformer l'image (inclut redimensionnement selon le modèle)
             img_tensor = transform(self.loaded_image).unsqueeze(0).to(device)
@@ -548,7 +548,7 @@ class ImprovedMaskingApp:
             # Créer l'image masquée
             fill_value = -1.0 if img_tensor.min().item() < 0.0 else 1.0
             masked_img = img_tensor * (1 - mask_tensor) + fill_value * mask_tensor
-            
+
             # Préparer l'entrée du réseau
             if self.model_type == "PENNet":
                 # PEN-Net attend 4 canaux: image RGB + masque
@@ -560,7 +560,7 @@ class ImprovedMaskingApp:
             self.model.eval()
             with torch.no_grad():
                 if self.model_type == "PENNet":
-                    output = self.model(net_input, mask_tensor)
+                    output = self.model(net_input,mask_tensor)
                 else:
                     try:
                         output = self.model(net_input, mask_tensor)
@@ -601,11 +601,11 @@ class ImprovedMaskingApp:
             plt.tight_layout()
             plt.show()
             
-            print("✅ Masque appliqué avec succès!")
+            print("Masque appliqué avec succès!")
             
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur lors de l'application du masque:\n{e}")
-            print(f"❌ Erreur: {e}")
+            print(f"Erreur: {e}")
 
 
 if __name__ == "__main__":

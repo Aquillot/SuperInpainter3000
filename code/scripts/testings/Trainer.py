@@ -383,6 +383,15 @@ class Trainer:
         torch.save(self.netG.state_dict(), pathG)
         torch.save(self.netD.state_dict(), pathD)
 
+    def load_models(self, state_dict_G = None, state_dict_D= None):
+        if state_dict_G is not None:
+            self.netG.load_state_dict_to_model(state_dict_G)
+        if state_dict_D is not None:
+            self.netD.load_state_dict(state_dict_D)
+        if state_dict_G or state_dict_D:
+            print("Models loaded.")
+
+
     def train(self):
         try:
             while self.iters < self.max_iters:

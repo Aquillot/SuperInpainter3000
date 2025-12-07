@@ -1,3 +1,5 @@
+from typing import Mapping, Any
+
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -234,6 +236,9 @@ class InpaintGenerator(nn.Module):
         # inputs: (masked_image RGB + mask) -> 4 channels
         feats, out = self.model(inputs, masks)           # raw output
         return feats, out
+
+    def load_state_dict_to_model(self, state_dict: Mapping[str, Any], strict: bool = True):
+        self.model.load_state_dict(state_dict, strict=strict)
 
 
 # ---------- helper spectral norm ----------
