@@ -28,13 +28,13 @@ config = {
     'lr': 1e-4,
     'beta1': 0.5, # valeur classique pour Adam dans les GANs
     'beta2': 0.999, # valeur classique pour Adam dans les GANs
-    'batch_size': 1024,
+    'batch_size': 24,
     'pixel_loss': 'l2',
     "total_epochs": 5,
     'd2glr': 0.05,                  # lr ratio D/G
     'num_workers': 16,             # nombre de "threads" pour le DataLoader
     'save_dir': base_path + "models",
-    'current_model_name': 'test.pth',
+    'current_model_name': 'epoch_14_256_adv01.pth',
 
     'image_range': 'tanh',
     'adversarial_weight': 0.01,
@@ -43,10 +43,10 @@ config = {
     'pyramid_weight': 0.05,
 
     # Faire des tests avant de train, les dimmensions peuvent etre mauvaises
-    "mask_line_width" : (1, 7),
-    "mask_line_count" : (1, 2),
+    "mask_line_width" : (7, 20),
+    "mask_line_count" : (1, 3),
     "train": False,
-    "dataset_images_size": 32,
+    "dataset_images_size": 256,
     "state_dict_G_path": None,
     "state_dict_D_path": None,
     "resume_checkpoint_path": None,
@@ -316,7 +316,7 @@ def test_model_gen():
     img_tensor, _ = next(iter(dataloader))
     img_tensor = img_tensor.to(device)
     B, C, H, W = img_tensor.shape
-    mask = create_mask_fast(B, H, W, device, thickness_range=config['mask_line_width'])
+    mask = create_mask_fast(B, H, W, device, thickness_range=config['mask_line_width'], num_lines_range=config['mask_line_count'])
     # mask = 1.0 - mask  # now 1=hole, 0=valid
 
     # choose fill_value consistent with normalization

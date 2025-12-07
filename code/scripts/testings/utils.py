@@ -50,7 +50,7 @@ def create_mask_fast(batch_size, H, W, device, num_lines_range=None, thickness_r
     """
 
     if thickness_range is None:
-        thickness_range = (int((H + W) * 0.08), int((H + W) * 0.2))
+        thickness_range = (int((H + W) * 0.01), int((H + W) * 0.08))
     if((H+W) * 0.5 <= 64 and num_lines_range is None):
         num_lines_range = (1, 2)
     elif(num_lines_range is not None):
