@@ -7,10 +7,10 @@ import csv
 import os
 import math
 import numpy as np
+from tqdm import tqdm
 from torchvision.utils import make_grid
 
-from utils import create_mask, normalize_images
-
+from utils import create_mask_fast, normalize_images
 from model import UNet, InpaintGenerator, Discriminator, PenNET
 from AdversarialLoss import AdversarialLoss
 import torch.nn.functional as F
@@ -35,17 +35,28 @@ class Trainer:
             pin_memory=True
         )
         
-        # CRITICAL: Define expected image range
-        self.image_range = config.get('image_range', 'tanh')  # 'tanh' or 'sigmoid'
+        self.image_range = config.get('image_range', 'tanh')
         assert self.image_range in ['tanh', 'sigmoid'], "image_range must be 'tanh' or 'sigmoid'"
         
-        # models
+        # Models
         self.netG = InpaintGenerator(model).to(self.device)
         self.netD = Discriminator(in_channels=3, use_sn=True).to(self.device)
         
-        # losses & optimizers
+        # Losses & optimizers
         self.adv_loss = AdversarialLoss().to(self.device)
-        self.l1 = nn.L1Loss()
+        
+        # Configure pixel loss function
+        pixel_loss_type = config.get('pixel_loss', 'l1')  # 'l1', 'l2', or 'smooth_l1'
+        if pixel_loss_type == 'l1':
+            self.pixel_loss = nn.L1Loss()
+        elif pixel_loss_type == 'l2':
+            self.pixel_loss = nn.MSELoss()
+        elif pixel_loss_type == 'smooth_l1':
+            self.pixel_loss = nn.SmoothL1Loss()
+        else:
+            raise ValueError(f"Unknown pixel_loss type: {pixel_loss_type}. Choose 'l1', 'l2', or 'smooth_l1'")
+        
+        print(f"Using {pixel_loss_type.upper()} loss for pixel reconstruction")
         
         self.optimG = torch.optim.Adam(
             self.netG.parameters(), 
@@ -60,8 +71,9 @@ class Trainer:
         
         self.iters = 0
         self.max_iters = config["total_epochs"] * math.ceil(len(dataset) / config["batch_size"])
+        self.best_loss = float('inf')
         
-        # loss tracking for visualization
+        # Loss tracking
         self.loss_history = {
             'iters': [],
             'loss_D': [],
@@ -73,139 +85,80 @@ class Trainer:
             'valid_loss': [],
             'pyramid_loss': []
         }
-        
-        # Real-time visualization setup
-        self.use_realtime_viz = config.get('realtime_viz', False)
-        if self.use_realtime_viz:
-            plt.ion()  # Enable interactive mode
-            self.fig = plt.figure(figsize=(20, 10))
-            self.gs = GridSpec(3, 5, figure=self.fig, hspace=0.3, wspace=0.3)
-            
-            # Create subplots for images
-            self.ax_input = self.fig.add_subplot(self.gs[0, 0])
-            self.ax_mask = self.fig.add_subplot(self.gs[0, 1])
-            self.ax_pred = self.fig.add_subplot(self.gs[0, 2])
-            self.ax_comp = self.fig.add_subplot(self.gs[0, 3])
-            self.ax_gt = self.fig.add_subplot(self.gs[0, 4])
-            
-            # Create subplots for loss curves
-            self.ax_loss_d = self.fig.add_subplot(self.gs[1, 0:2])
-            self.ax_loss_g = self.fig.add_subplot(self.gs[1, 2:4])
-            self.ax_loss_pixel = self.fig.add_subplot(self.gs[1, 4])
-            self.ax_loss_components = self.fig.add_subplot(self.gs[2, 0:3])
-            self.ax_loss_ratio = self.fig.add_subplot(self.gs[2, 3:5])
-            
-            # Configure axes
-            for ax in [self.ax_input, self.ax_mask, self.ax_pred, self.ax_comp, self.ax_gt]:
-                ax.axis('off')
-            
-            self.ax_input.set_title('Masked Input', fontsize=10, fontweight='bold')
-            self.ax_mask.set_title('Mask', fontsize=10, fontweight='bold')
-            self.ax_pred.set_title('Prediction', fontsize=10, fontweight='bold')
-            self.ax_comp.set_title('Composite', fontsize=10, fontweight='bold')
-            self.ax_gt.set_title('Ground Truth', fontsize=10, fontweight='bold')
-            
-            self.fig.suptitle('Training Progress', fontsize=16, fontweight='bold')
-            plt.show(block=False)
-        self.best_loss = float('inf')
-    
-    def update_realtime_viz(self, images, masks, pred_img, comp_img, images_masked):
-        """Update the real-time visualization with current batch results."""
-        # Update images
-        self.ax_input.clear()
-        self.ax_mask.clear()
-        self.ax_pred.clear()
-        self.ax_comp.clear()
-        self.ax_gt.clear()
-        
-        self.ax_input.imshow(self.tensor_to_image(images_masked))
-        self.ax_input.set_title('Masked Input', fontsize=10, fontweight='bold')
-        self.ax_input.axis('off')
-        
-        self.ax_mask.imshow(self.tensor_to_image(masks), cmap='gray')
-        self.ax_mask.set_title('Mask (white=hole)', fontsize=10, fontweight='bold')
-        self.ax_mask.axis('off')
-        
-        self.ax_pred.imshow(self.tensor_to_image(pred_img))
-        self.ax_pred.set_title('Prediction', fontsize=10, fontweight='bold')
-        self.ax_pred.axis('off')
-        
-        self.ax_comp.imshow(self.tensor_to_image(comp_img))
-        self.ax_comp.set_title('Composite', fontsize=10, fontweight='bold')
-        self.ax_comp.axis('off')
-        
-        self.ax_gt.imshow(self.tensor_to_image(images))
-        self.ax_gt.set_title('Ground Truth', fontsize=10, fontweight='bold')
-        self.ax_gt.axis('off')
-        
-        # Update loss curves (only if we have enough data)
-        if len(self.loss_history['iters']) > 1:
-            iters = self.loss_history['iters']
-            
-            # D losses
-            self.ax_loss_d.clear()
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D'], 'b-', label='Total D', linewidth=2)
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D_real'], 'g--', label='D Real', alpha=0.7)
-            self.ax_loss_d.plot(iters, self.loss_history['loss_D_fake'], 'r--', label='D Fake', alpha=0.7)
-            self.ax_loss_d.set_xlabel('Iteration')
-            self.ax_loss_d.set_ylabel('Loss')
-            self.ax_loss_d.set_title('Discriminator Losses')
-            self.ax_loss_d.legend(loc='upper right', fontsize=8)
-            self.ax_loss_d.grid(True, alpha=0.3)
-            
-            # G adversarial
-            self.ax_loss_g.clear()
-            self.ax_loss_g.plot(iters, self.loss_history['loss_G'], 'purple', label='Total G', linewidth=2)
-            self.ax_loss_g.plot(iters, self.loss_history['loss_G_adv'], 'orange', label='G Adversarial', alpha=0.7)
-            self.ax_loss_g.set_xlabel('Iteration')
-            self.ax_loss_g.set_ylabel('Loss')
-            self.ax_loss_g.set_title('Generator Losses')
-            self.ax_loss_g.legend(loc='upper right', fontsize=8)
-            self.ax_loss_g.grid(True, alpha=0.3)
-            
-            # Pixel losses
-            self.ax_loss_pixel.clear()
-            self.ax_loss_pixel.plot(iters, self.loss_history['hole_loss'], 'red', label='Hole', linewidth=2)
-            self.ax_loss_pixel.plot(iters, self.loss_history['valid_loss'], 'blue', label='Valid', linewidth=2)
-            if max(self.loss_history['pyramid_loss']) > 0:
-                self.ax_loss_pixel.plot(iters, self.loss_history['pyramid_loss'], 'green', label='Pyramid', linewidth=2)
-            self.ax_loss_pixel.set_xlabel('Iteration')
-            self.ax_loss_pixel.set_ylabel('Loss')
-            self.ax_loss_pixel.set_title('Reconstruction Losses')
-            self.ax_loss_pixel.legend(loc='upper right', fontsize=8)
-            self.ax_loss_pixel.grid(True, alpha=0.3)
-            
-            # All components
-            self.ax_loss_components.clear()
-            self.ax_loss_components.plot(iters, self.loss_history['loss_G_adv'], label='Adversarial', linewidth=1.5)
-            self.ax_loss_components.plot(iters, self.loss_history['hole_loss'], label='Hole', linewidth=1.5)
-            self.ax_loss_components.plot(iters, self.loss_history['valid_loss'], label='Valid', linewidth=1.5)
-            if max(self.loss_history['pyramid_loss']) > 0:
-                self.ax_loss_components.plot(iters, self.loss_history['pyramid_loss'], label='Pyramid', linewidth=1.5)
-            self.ax_loss_components.set_xlabel('Iteration')
-            self.ax_loss_components.set_ylabel('Loss')
-            self.ax_loss_components.set_title('All Loss Components')
-            self.ax_loss_components.legend(loc='upper right', fontsize=8)
-            self.ax_loss_components.grid(True, alpha=0.3)
-            
-            # D/G ratio (indicator of training balance)
-            self.ax_loss_ratio.clear()
-            d_losses = np.array(self.loss_history['loss_D'])
-            g_adv_losses = np.array(self.loss_history['loss_G_adv'])
-            ratio = d_losses / (g_adv_losses + 1e-8)
-            self.ax_loss_ratio.plot(iters, ratio, 'purple', linewidth=2)
-            self.ax_loss_ratio.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, label='Balance')
-            self.ax_loss_ratio.set_xlabel('Iteration')
-            self.ax_loss_ratio.set_ylabel('Ratio')
-            self.ax_loss_ratio.set_title('D_loss / G_adv_loss Ratio')
-            self.ax_loss_ratio.legend(loc='upper right', fontsize=8)
-            self.ax_loss_ratio.grid(True, alpha=0.3)
 
-        plt.draw()
-        plt.pause(0.001)  # Small pause to update display
+    def save_checkpoint(self, filepath, is_best=False):
+        """
+        Sauvegarde un checkpoint complet de l'entraînement.
+        
+        Args:
+            filepath: Chemin où sauvegarder le checkpoint
+            is_best: Si True, c'est le meilleur modèle jusqu'à présent
+        """
+        checkpoint = {
+            'iters': self.iters,
+            'max_iters': self.max_iters,
+            'best_loss': self.best_loss,
+            'netG_state_dict': self.netG.state_dict(),
+            'netD_state_dict': self.netD.state_dict(),
+            'optimG_state_dict': self.optimG.state_dict(),
+            'optimD_state_dict': self.optimD.state_dict(),
+            'loss_history': self.loss_history,
+            'config': self.config
+        }
+        
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+        torch.save(checkpoint, filepath)
+        
+        if is_best:
+            best_path = os.path.join(
+                os.path.dirname(filepath), 
+                'checkpoint_best.pth'
+            )
+            torch.save(checkpoint, best_path)
+    
+    def load_checkpoint(self, filepath):
+        """
+        Charge un checkpoint pour reprendre l'entraînement.
+        
+        Args:
+            filepath: Chemin du checkpoint à charger
+        
+        Returns:
+            bool: True si le chargement a réussi, False sinon
+        """
+        if not os.path.exists(filepath):
+            print(f"Checkpoint not found at {filepath}")
+            return False
+        
+        print(f"Loading checkpoint from {filepath}...")
+        checkpoint = torch.load(filepath, map_location=self.device)
+        
+        # Restore training state
+        self.iters = checkpoint['iters']
+        self.max_iters = checkpoint.get('max_iters', self.max_iters)
+        self.best_loss = checkpoint.get('best_loss', float('inf'))
+        
+        # Restore models
+        self.netG.load_state_dict(checkpoint['netG_state_dict'])
+        self.netD.load_state_dict(checkpoint['netD_state_dict'])
+        
+        # Restore optimizers
+        self.optimG.load_state_dict(checkpoint['optimG_state_dict'])
+        self.optimD.load_state_dict(checkpoint['optimD_state_dict'])
+        
+        # Restore loss history
+        self.loss_history = checkpoint.get('loss_history', self.loss_history)
+        
+        print(f"Checkpoint loaded successfully. Resuming from iteration {self.iters}/{self.max_iters}")
+        return True
     
     def train_epoch(self):
-        for images, *_ in self.dataloader:
+        pbar = tqdm(self.dataloader, desc=f'Epoch Progress', 
+                    total=min(len(self.dataloader), 
+                             (self.max_iters - self.iters) // 1 + 1),
+                    ncols=120)
+
+        for images, *_ in pbar:
             if self.iters >= self.max_iters:
                 break
             self.iters += 1
@@ -213,21 +166,21 @@ class Trainer:
             images = images.to(self.device)
             B, C, H, W = images.shape
             
-            # Normalize images to expected range
+            # Normalize images
             images, fill_value = normalize_images(self.image_range, images)
             
-            # Create masks: 1=hole, 0=valid
-            masks = create_mask(B, H, W, device=self.device)
+            # Create masks
+            masks = create_mask_fast(B, H, W, device=self.device)
             
-            # Build input: masked image + mask channel
+            # Build input
             images_masked = images * (1 - masks) + fill_value * masks
-            inputs = torch.cat([images_masked, masks], dim=1)  # (N, 4, H, W)
+            inputs = torch.cat([images_masked, masks], dim=1)
 
-            # ----- Forward G -----
+            # Forward G
             feats, pred_img = self.netG(inputs, masks)
             comp_img = images * (1 - masks) + pred_img * masks
 
-            # ----- Train D -----
+            # Train D
             self.optimD.zero_grad()
             real_score = self.netD(images)
             fake_score = self.netD(comp_img.detach())
@@ -237,20 +190,20 @@ class Trainer:
             loss_D.backward()
             self.optimD.step()
 
-            # ----- Train G -----
+            # Train G
             self.optimG.zero_grad()
             fake_score_for_G = self.netD(comp_img)
             loss_G_adv = self.adv_loss(fake_score_for_G, True, False)
             loss_G = loss_G_adv * self.config.get('adversarial_weight', 1.0)
             
-            # Pixel losses (normalized by mask area)
-            hole_loss = self.l1(pred_img * masks, images * masks) / (masks.mean() + 1e-8)
-            valid_loss = self.l1(pred_img * (1 - masks), images * (1 - masks)) / ((1 - masks).mean() + 1e-8)
+            # Pixel losses
+            hole_loss = self.pixel_loss(pred_img * masks, images * masks) / (masks.mean() + 1e-8)
+            valid_loss = self.pixel_loss(pred_img * (1 - masks), images * (1 - masks)) / ((1 - masks).mean() + 1e-8)
             
             loss_G = loss_G + hole_loss * self.config.get('hole_weight', 6.0)
             loss_G = loss_G + valid_loss * self.config.get('valid_weight', 1.0)
             
-            # Pyramid loss (normalized by number of scales)
+            # Pyramid loss
             pyramid_loss = torch.tensor(0.0, device=self.device)
             if feats is not None and len(feats) > 0 and self.config.get('pyramid_weight', 0.0) > 0.0:
                 for f in feats:
@@ -260,42 +213,58 @@ class Trainer:
                         mode='bilinear', 
                         align_corners=True
                     )
-                    pyramid_loss += self.l1(f, target)
-                pyramid_loss = pyramid_loss / len(feats)  # NORMALIZE BY NUMBER OF SCALES
+                    pyramid_loss += self.pixel_loss(f, target)
+                pyramid_loss = pyramid_loss / len(feats)
                 loss_G = loss_G + pyramid_loss * self.config.get('pyramid_weight', 0.5)
             
             loss_G.backward()
             self.optimG.step()
 
             # Track losses
-            self.loss_history['iters'].append(self.iters)
-            self.loss_history['loss_D'].append(loss_D.item())
-            self.loss_history['loss_D_real'].append(loss_D_real.item())
-            self.loss_history['loss_D_fake'].append(loss_D_fake.item())
-            self.loss_history['loss_G'].append(loss_G.item())
-            self.loss_history['loss_G_adv'].append(loss_G_adv.item())
-            self.loss_history['hole_loss'].append(hole_loss.item())
-            self.loss_history['valid_loss'].append(valid_loss.item())
-            self.loss_history['pyramid_loss'].append(pyramid_loss.item())
+            log_interval = self.config.get('log_interval', 10)
+            if self.iters % log_interval == 0 or self.iters == 1:
+                self.loss_history['iters'].append(self.iters)
+                self.loss_history['loss_D'].append(loss_D.item())
+                self.loss_history['loss_D_real'].append(loss_D_real.item())
+                self.loss_history['loss_D_fake'].append(loss_D_fake.item())
+                self.loss_history['loss_G'].append(loss_G.item())
+                self.loss_history['loss_G_adv'].append(loss_G_adv.item())
+                self.loss_history['hole_loss'].append(hole_loss.item())
+                self.loss_history['valid_loss'].append(valid_loss.item())
+                self.loss_history['pyramid_loss'].append(pyramid_loss.item())
 
-            # Logging
-            if self.iters % 100 == 0:
-                print(f"[iter {self.iters}/{self.max_iters}] "
-                      f"D: {loss_D.item():.4f} G: {loss_G.item():.4f} "
-                      f"adv: {loss_G_adv.item():.4f} hole: {hole_loss.item():.4f} "
-                      f"valid: {valid_loss.item():.4f} pyr: {pyramid_loss.item():.4f}\n")
 
-            if loss_G < self.best_loss:
+            pbar.set_postfix({
+                'D': f'{loss_D.item():.4f}',
+                'G': f'{loss_G.item():.4f}',
+                'hole': f'{hole_loss.item():.4f}',
+                'valid': f'{valid_loss.item():.4f}',
+                'iter': f'{self.iters}/{self.max_iters}'
+            })
+
+            min_improvement = self.config.get('min_improvement', 0.01)  # Amélioration minimale de 1%
+            save_cooldown = self.config.get('save_cooldown', 100)  # Attendre 100 iters entre sauvegardes
+            if not hasattr(self, 'last_save_iter'):
+                self.last_save_iter = 0
+
+
+            # Save best model
+            # Wait a bit between saves and there need to be a minimum threshold in improvements to trigger a save
+            save_cooldown_ok = (self.iters - self.last_save_iter) >= save_cooldown and self.iters > 0.5 * self.max_iters
+            save_diff_ok = loss_G.item() < self.best_loss * (1 - min_improvement)
+            if save_cooldown_ok and save_diff_ok:
                 self.best_loss = loss_G.item()
-                # Save best model
-                pathG = f"{self.config.get('save_dir', './')}/gen_best.pth"
-                pathD = f"{self.config.get('save_dir', './')}/disc_best.pth"
-                self.save_models(pathG, pathD)
-                print(f"New best model saved at iter {self.iters} with G loss {loss_G.item():.4f}\n")
+                save_dir = self.config.get('save_dir', './')
+                checkpoint_path = f"{save_dir}/checkpoint_best.pth"
+                self.save_checkpoint(checkpoint_path, is_best=True)
             
-            # Real-time visualization update
-            if self.use_realtime_viz and self.iters % self.config.get('viz_update_freq', 50) == 0:
-                self.update_realtime_viz(images, masks, pred_img, comp_img, images_masked)
+            # Periodic checkpoint save
+            checkpoint_interval = self.config.get('checkpoint_interval', 1000)
+            if self.iters % checkpoint_interval == 0:
+                save_dir = self.config.get('save_dir', './')
+                checkpoint_path = f"{save_dir}/checkpoint_iter_{self.iters}.pth"
+                self.save_checkpoint(checkpoint_path)
+        pbar.close()
 
     def save_metrics(self, filepath):
         """Save training metrics to CSV."""
@@ -310,8 +279,154 @@ class Trainer:
                 writer.writerow(row)
         print(f"Saved metrics to {filepath}")
 
+    def train(self, resume_from=None):
+        """
+        Lance l'entraînement.
+        
+        Args:
+            resume_from: Chemin vers un checkpoint pour reprendre l'entraînement.
+                        Si None, commence depuis le début.
+        """
+        # Load checkpoint if specified
+        if resume_from is not None:
+            if self.load_checkpoint(resume_from):
+                print(f"Resuming training from iteration {self.iters}")
+            else:
+                print("Starting training from scratch")
+        
+        try:
+            while self.iters < self.max_iters:
+                self.train_epoch()
+
+                # Save periodic checkpoint (already handled in train_epoch)
+                # But also save at end of epoch
+                save_dir = self.config.get('save_dir', './')
+                checkpoint_path = f"{save_dir}/checkpoint_latest.pth"
+                self.save_checkpoint(checkpoint_path)
+                
+                # Save metrics
+                metrics_csv = f"{save_dir}/training_metrics.csv"
+                self.save_metrics(metrics_csv)
+            
+            # Final save
+            save_dir = self.config.get('save_dir', './')
+            final_checkpoint = f"{save_dir}/checkpoint_final.pth"
+            self.save_checkpoint(final_checkpoint)
+            
+            metrics_plot = f"{save_dir}/training_curves.png"
+            self.plot_metrics(metrics_plot)
+            print("Training finished")
+        
+        except KeyboardInterrupt:
+            print("\nTraining interrupted by user!")
+            save_dir = self.config.get('save_dir', './')
+            interrupt_checkpoint = f"{save_dir}/checkpoint_interrupted.pth"
+            self.save_checkpoint(interrupt_checkpoint)
+            print(f"Checkpoint saved to {interrupt_checkpoint}")
+            print("You can resume training by loading this checkpoint.")
+
+    # Keep other methods (update_realtime_viz, plot_metrics, etc.) unchanged
+    def tensor_to_image(self, tensor):
+        """Convert tensor to displayable image."""
+        if len(tensor.shape) == 4:
+            tensor = tensor[0]
+        img = tensor.detach().cpu().permute(1, 2, 0).numpy()
+        if self.image_range == 'tanh':
+            img = (img + 1) / 2
+        img = np.clip(img, 0, 1)
+        return img
+
+    @staticmethod
+    def plot_checkpoint_history(checkpoint_path, save_path=None):
+        """
+        Affiche l'historique d'entraînement depuis un checkpoint.
+        
+        Args:
+            checkpoint_path: Chemin vers le checkpoint
+            save_path: Chemin où sauvegarder le graphique (optionnel)
+        """
+        if not os.path.exists(checkpoint_path):
+            print(f"Checkpoint not found at {checkpoint_path}")
+            return
+        
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        loss_history = checkpoint.get('loss_history', None)
+        
+        if loss_history is None or len(loss_history.get('iters', [])) == 0:
+            print("No loss history found in checkpoint")
+            return
+        
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig.suptitle(f'Training History from Checkpoint\n(Iteration {checkpoint.get("iters", "?")})', fontsize=16)
+        
+        iters = loss_history['iters']
+        
+        # D losses
+        axes[0, 0].plot(iters, loss_history['loss_D'], label='Total D Loss', linewidth=2)
+        axes[0, 0].set_xlabel('Iteration')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title('Discriminator Loss')
+        axes[0, 0].grid(True)
+        axes[0, 0].legend()
+        
+        # D real vs fake
+        axes[0, 1].plot(iters, loss_history['loss_D_real'], label='D Real', linewidth=2)
+        axes[0, 1].plot(iters, loss_history['loss_D_fake'], label='D Fake', linewidth=2)
+        axes[0, 1].set_xlabel('Iteration')
+        axes[0, 1].set_ylabel('Loss')
+        axes[0, 1].set_title('Discriminator Real vs Fake')
+        axes[0, 1].grid(True)
+        axes[0, 1].legend()
+        
+        # G adversarial loss
+        axes[0, 2].plot(iters, loss_history['loss_G_adv'], label='G Adversarial', linewidth=2, color='orange')
+        axes[0, 2].set_xlabel('Iteration')
+        axes[0, 2].set_ylabel('Loss')
+        axes[0, 2].set_title('Generator Adversarial Loss')
+        axes[0, 2].grid(True)
+        axes[0, 2].legend()
+        
+        # Total G loss
+        axes[1, 0].plot(iters, loss_history['loss_G'], label='Total G Loss', linewidth=2, color='green')
+        axes[1, 0].set_xlabel('Iteration')
+        axes[1, 0].set_ylabel('Loss')
+        axes[1, 0].set_title('Generator Total Loss')
+        axes[1, 0].grid(True)
+        axes[1, 0].legend()
+        
+        # Hole and valid losses
+        axes[1, 1].plot(iters, loss_history['hole_loss'], label='Hole Loss', linewidth=2)
+        axes[1, 1].plot(iters, loss_history['valid_loss'], label='Valid Loss', linewidth=2)
+        axes[1, 1].plot(iters, loss_history['pyramid_loss'], label='Pyramid Loss', linewidth=2)
+        axes[1, 1].set_xlabel('Iteration')
+        axes[1, 1].set_ylabel('Loss')
+        axes[1, 1].set_title('Reconstruction Losses')
+        axes[1, 1].grid(True)
+        axes[1, 1].legend()
+        
+        # Combined G loss components
+        axes[1, 2].plot(iters, loss_history['loss_G_adv'], label='Adversarial', linewidth=2)
+        axes[1, 2].plot(iters, loss_history['hole_loss'], label='Hole', linewidth=2)
+        axes[1, 2].plot(iters, loss_history['valid_loss'], label='Valid', linewidth=2)
+        axes[1, 2].set_xlabel('Iteration')
+        axes[1, 2].set_ylabel('Loss')
+        axes[1, 2].set_title('G Loss Components')
+        axes[1, 2].grid(True)
+        axes[1, 2].legend()
+        
+        plt.tight_layout()
+        
+        if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+            plt.savefig(save_path, dpi=100, bbox_inches='tight')
+            print(f"Saved plot to {save_path}")
+        
+        plt.show()
+        return fig
+
     def plot_metrics(self, filepath=None):
         """Plot training metrics."""
+        # Use the static method with current loss_history
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
         fig.suptitle('Training Metrics', fontsize=16)
         
@@ -378,43 +493,3 @@ class Trainer:
             print(f"Saved plot to {filepath}")
         
         plt.show()
-
-    def save_models(self, pathG, pathD):
-        torch.save(self.netG.state_dict(), pathG)
-        torch.save(self.netD.state_dict(), pathD)
-
-    def load_models(self, state_dict_G = None, state_dict_D= None):
-        if state_dict_G is not None:
-            self.netG.load_state_dict_to_model(state_dict_G)
-        if state_dict_D is not None:
-            self.netD.load_state_dict(state_dict_D)
-        if state_dict_G or state_dict_D:
-            print("Models loaded.")
-
-
-    def train(self):
-        try:
-            while self.iters < self.max_iters:
-                self.train_epoch()
-
-                pathG = f"{self.config.get('save_dir', './')}/gen_iter_{self.iters}.pth"
-                pathD = f"{self.config.get('save_dir', './')}/disc_iter_{self.iters}.pth"
-                self.save_models(pathG, pathD)
-                print(f"Saved models at iteration {self.iters}")
-
-                save_dir = self.config.get('save_dir', './')
-                metrics_csv = f"{save_dir}/training_metrics.csv"
-                self.save_metrics(metrics_csv)
-            
-            # Final save
-            pathG = f"{self.config.get('save_dir', './')}/gen_final.pth"
-            pathD = f"{self.config.get('save_dir', './')}/disc_final.pth"
-            self.save_models(pathG, pathD)
-            
-            save_dir = self.config.get('save_dir', './')
-            metrics_plot = f"{save_dir}/training_curves.png"
-            self.plot_metrics(metrics_plot)
-            print("Training finished")
-        finally:
-            # Always close visualization window if it was opened
-            print("Je devrais gérer un cas ici")

@@ -42,6 +42,50 @@ def create_mask(batch_size, H, W, device):
     mask = 1.0 - mask
     return mask
 
+
+def create_mask_fast(batch_size, H, W, device, num_lines_range=(1, 4), thickness_range=(7, 25)):
+    """
+    Version optimisée qui traite ligne par ligne mais garde la vectorisation sur le batch.
+    Utilise moins de mémoire que la version complète.
+    """
+    mask = torch.zeros((batch_size, 1, H, W), device=device)
+    
+    # Créer la grille une seule fois
+    yy, xx = torch.meshgrid(torch.arange(H, device=device, dtype=torch.float32),
+                           torch.arange(W, device=device, dtype=torch.float32),
+                           indexing='ij')
+    yy = yy.unsqueeze(0)  # (1, H, W)
+    xx = xx.unsqueeze(0)  # (1, H, W)
+    
+    for b in range(batch_size):
+        n_lines = torch.randint(num_lines_range[0], num_lines_range[1], (1,), device=device).item()
+        
+        for _ in range(n_lines):
+            # Paramètres de la ligne
+            x1 = torch.randint(0, W, (1,), device=device).float()
+            y1 = torch.randint(0, H, (1,), device=device).float()
+            x2 = torch.randint(0, W, (1,), device=device).float()
+            y2 = torch.randint(0, H, (1,), device=device).float()
+            thickness = torch.randint(thickness_range[0], thickness_range[1], (1,), device=device).float()
+            
+            # Calculer distance pour cette ligne
+            dx = x2 - x1
+            dy = y2 - y1
+            line_length_sq = torch.clamp(dx * dx + dy * dy, min=1e-6)
+            
+            t = ((xx - x1) * dx + (yy - y1) * dy) / line_length_sq
+            t = torch.clamp(t, 0, 1)
+            
+            proj_x = x1 + t * dx
+            proj_y = y1 + t * dy
+            
+            dist = torch.sqrt((xx - proj_x) ** 2 + (yy - proj_y) ** 2)
+            line_mask = dist < thickness
+            
+            mask[b, 0] = torch.where(line_mask[0], torch.ones_like(mask[b, 0]), mask[b, 0])
+    
+    return mask
+
 def tensor_to_image(tensor):
     """Convert tensor to displayable image [0, 1] range."""
     img = tensor.detach().cpu()
