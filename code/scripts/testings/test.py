@@ -34,7 +34,7 @@ config = {
     'd2glr': 0.05,                  # lr ratio D/G
     'num_workers': 16,             # nombre de "threads" pour le DataLoader
     'save_dir': base_path + "models",
-    'current_model_name': 'epoch_14_256_adv01.pth',
+    'current_model_name': 'SuperInpainter3000.pth',
 
     'image_range': 'tanh',
     'adversarial_weight': 0.01,
@@ -358,6 +358,25 @@ def test_model_gen():
 
     for a in ax: a.axis("off")
     plt.show()
+
+    # Ajout affichage des pyramids si on en a
+    if pyramid_imgs is not None and len(pyramid_imgs) > 0:
+        fig2, ax2 = plt.subplots(1, 5, figsize=(12, 4))
+        ax2[0].imshow(to_img(pyramid_imgs[4]))
+        ax2[0].set_title("Image pyramid 1")
+
+        ax2[1].imshow(to_img(pyramid_imgs[3]))
+        ax2[1].set_title("Image pyramid 2")
+
+        ax2[2].imshow(to_img(pyramid_imgs[2]))
+        ax2[2].set_title("Image pyramid 3")
+
+        ax2[3].imshow(to_img(pyramid_imgs[1]))
+        ax2[3].set_title("Image pyramid 2")
+
+        ax2[4].imshow(to_img(pyramid_imgs[0]))
+        ax2[4].set_title("Image pyramid 3")
+        plt.show()
 
 
 if config["train"]:

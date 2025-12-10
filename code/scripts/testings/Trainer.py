@@ -283,6 +283,23 @@ class Trainer:
                 writer.writerow(row)
         print(f"Saved metrics to {filepath}")
 
+    def load_metrics(self, filepath):
+        """Load training metrics from CSV."""
+        if not os.path.exists(filepath):
+            print(f"Metrics file not found at {filepath}")
+            return
+
+        with open(filepath, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            data = {key: [] for key in header}
+            for row in reader:
+                for key, value in zip(header, row):
+                    data[key].append(float(value))
+
+        self.loss_history = data
+        print(f"Loaded metrics from {filepath}")
+
     def train(self, resume_from=None):
         """
         Lance l'entraînement.
