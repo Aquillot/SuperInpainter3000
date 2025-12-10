@@ -1,5 +1,5 @@
 from tkinter import *
-from tkinter import colorchooser, ttk, filedialog
+from tkinter import colorchooser, ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
@@ -10,248 +10,607 @@ try:
 except Exception:
     torch = None
 
-
-
-from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
-import numpy as np
-from torchvision.transforms import ToTensor, Compose, Normalize, Resize, InterpolationMode
-import torchvision
-import torch
-from tqdm import tqdm
-from PIL import Image, ImageDraw
-import torchvision.transforms.functional as TF
-
-
-
+from torchvision.transforms import ToTensor, Compose, Normalize, Resize
+from pennet import InpaintGeneratorPennet
 from testings.model import UNet
 from testings.utils import to_img
 
 base_path = "../"
+models_dir = base_path + "models/"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-try :
-    model = InpaintGenerator(PenNET(3)).to(device)
 
-    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
-    # Retirer le préfixe "unet."
-    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(new_state_dict)
-except Exception as e:
-    print ("\033[91m")  # Code ANSI pour le rouge
-    print("Could not load model:", e, "\n Try to load with UNet architecture.")
-    print ("\033[0m")   # Réinitialiser la couleur
-    model = UNet(3).to(device)
-    state_dict = torch.load(base_path + "models/gen_cifar_10epoch_64.pth")
-    new_state_dict = {k.replace("unet.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(new_state_dict)
+def build_transform(size):
+    return Compose([
+        Resize((size, size)),
+        ToTensor(),
+        Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
 
-transform = Compose([
-    Resize(64, interpolation=InterpolationMode.NEAREST),
-    ToTensor(),
-    Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-])
-
-target_model_resolution = 64
+default_input_size = 128
+transform = build_transform(default_input_size)
 
 
-
-class main:
+class ImprovedMaskingApp:
     def __init__(self, master):
         self.master = master
         self.color_fg = 'Black'
         self.color_bg = 'white'
         self.old_x = None
         self.old_y = None
-        self.pen_width = 5
-        # creer une image PIL miroir du canvas pour extraction de mask
+        self.pen_width = 15
+        
+        # Canvas dimensions
         self.canvas_width = 128
         self.canvas_height = 128
-        self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
-        self._draw = ImageDraw.Draw(self._pil_image)
-        self.drawWidgets()
-        self.c.bind('<B1-Motion>', self.paint)
-        self.c.bind('<ButtonRelease-1>', self.reset)
+        
+        # Image chargée (PIL Image RGB)
+        self.loaded_image = None
+        # Masque à la résolution de l'image originale (PIL Image 'L')
+        self.mask_image = None
+        
+        # Variables pour l'affichage
+        self.canvas_image_id = None
+        self.display_tk_image = None
+        self.view_scale = 1.0
+        self.view_x0 = 0
+        self.view_y0 = 0
+        
+        # Modèle sélectionné
+        self.selected_model_path = None
+        self.model = None
+        self.model_type = None
+        self.input_size = default_input_size
+        
+        self.setup_ui()
+        self.setup_bindings()
 
-        self.mask = None
-        self.image_to_mask = None
-
-    def paint(self, e):
-        if self.old_x and self.old_y:
-            w = int(round(self.pen_width))
-            self.c.create_line(self.old_x, self.old_y, e.x, e.y, width=w, fill = self.color_fg, capstyle='round', smooth = True)
-            # dessiner aussi sur l'image PIL miroir
-            # Pillow line draws inclusive of end points; convert coords to tuple
-            self._draw.line([(self.old_x, self.old_y), (e.x, e.y)], fill=self.color_fg, width=w)
-        self.old_x = e.x
-        self.old_y = e.y
-
-    def reset(self, e):
-        self.old_x = None
-        self.old_y = None
-    
-    def changedW(self, width):
-        # ttk.Scale passes the value as a string; convert to float
-        try:
-            self.pen_width = float(width)
-        except Exception:
-            # fallback: keep previous value
-            pass
-    
-    def clearcanvas(self):
-        self.c.delete(ALL)
-        # reset PIL mirror
-        self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
-        self._draw = ImageDraw.Draw(self._pil_image)
-    
-    def change_fg(self):
-        self.color_fg = colorchooser.askcolor(color=self.color_fg)[1]
-    
-    def change_bg(self):
-        self.color_bg = colorchooser.askcolor(color=self.color_bg)[1]
-        self.c['bg'] = self.color_bg
-        # update PIL mirror background
-        # create new image preserving drawn content could be complex; here we reset
-        self._pil_image = Image.new('RGB', (self.canvas_width, self.canvas_height), self.color_bg)
-        self._draw = ImageDraw.Draw(self._pil_image)
-
-    def drawWidgets(self):
+    def setup_ui(self):
+        """Configure l'interface utilisateur"""
+        # Frame de contrôle à gauche
         self.controls = Frame(self.master, padx=5, pady=5)
-        textpw = Label(self.controls, text='Pen Width', font='Georgia 16')
-        textpw.grid(row=0, column=0)
-        self.slider = ttk.Scale(self.controls, from_=5, to=100, command=self.changedW, orient='vertical')
+        self.controls.pack(side="left", fill="y")
+        
+        # Titre
+        title = Label(self.controls, text='Adobe3000 Premium', font='Georgia 14 bold')
+        title.grid(row=0, column=0, columnspan=2, pady=(0, 10))
+        
+        # Slider pour la largeur du pinceau
+        Label(self.controls, text='Taille Pinceau', font='Georgia 12').grid(row=1, column=0, columnspan=2)
+        self.slider = ttk.Scale(self.controls, from_=5, to=100, command=self.change_pen_width, orient='vertical', length=150)
         self.slider.set(self.pen_width)
-        self.slider.grid(row=0, column=1)
-        self.controls.pack(side="left")
-        self.c = Canvas(self.master, width=128, height=128, bg=self.color_bg)
-        self.c.pack(fill=BOTH, expand=True)
+        self.slider.grid(row=2, column=0, columnspan=2, pady=5)
+        
+        # Label affichant la taille actuelle
+        self.pen_label = Label(self.controls, text=f'{self.pen_width} px', font='Georgia 10')
+        self.pen_label.grid(row=3, column=0, columnspan=2)
+        
+        # Boutons principaux
+        btn_config = {'width': 18, 'pady': 5}
+        
+        Button(self.controls, text='Charger Image', command=self.load_image, **btn_config).grid(row=4, column=0, columnspan=2, pady=(15, 5))
+        Button(self.controls, text='Sélectionner Modèle', command=self.select_model_dialog, **btn_config).grid(row=5, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Appliquer Masque', command=self.apply_mask, **btn_config).grid(row=6, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Effacer Masque', command=self.clear_mask, **btn_config).grid(row=7, column=0, columnspan=2, pady=5)
+        Button(self.controls, text='Réinitialiser Tout', command=self.clear_all, **btn_config).grid(row=8, column=0, columnspan=2, pady=5)
+        
+        # Info sur le modèle chargé
+        Label(self.controls, text='Modèle:', font='Georgia 10').grid(row=9, column=0, columnspan=2, pady=(15, 0))
+        self.model_label = Label(self.controls, text='Aucun', font='Georgia 9', fg='red', wraplength=150)
+        self.model_label.grid(row=10, column=0, columnspan=2)
+        
+        # Canvas principal
+        self.canvas = Canvas(self.master, width=self.canvas_width, height=self.canvas_height, bg=self.color_bg, cursor='crosshair')
+        self.canvas.pack(fill="both", expand=True)
 
+        # Menu
+        self.setup_menu()
 
-        apply_btn = Button(self.controls, text='Apply mask', command=self.apply_mask)
-        apply_btn.grid(row=1, column=0, columnspan=2, pady=(10,0))
-
-        load_btn = Button(self.controls, text='Load image', command=self.load_image)
-        load_btn.grid(row=2, column=0, columnspan=2, pady=(10,0))
-
+    def setup_menu(self):
+        """Configure le menu"""
         menu = Menu(self.master)
         self.master.config(menu=menu)
-        optionmenu = Menu(menu)
-        menu.add_cascade(label='Menu', menu=optionmenu)
-        optionmenu.add_command(label='Brush Color', command=self.change_fg)
-        optionmenu.add_command(label='Background Color', command=self.change_bg)
-        optionmenu.add_command(label='Clear Canvas', command=self.clearcanvas)
-        optionmenu.add_command(label='Exit', command=self.master.destroy)    
-    
-    def get_mask_tensor(self, invert=False, to_torch=True, device='cpu'):
-        """
-        Retourne un mask binaire issu du canvas PIL miroir.
-        - compare la valeur en niveau de gris du pixel (0,0) comme fond
-        - retourne shape (1,1,H,W)
-        - si `to_torch` et torch est disponible, retourne un `torch.float32` tensor sur `device`
-        """
-        # récupérer image PIL
-        pil = self._pil_image.convert('L')
-        arr = np.asarray(pil)
-        # background estimated from top-left pixel
-        bg = arr[0, 0]
-        mask = (arr != bg).astype(np.float32)
-        if invert:
-            mask = 1.0 - mask
+        
+        file_menu = Menu(menu, tearoff=0)
+        menu.add_cascade(label='Fichier', menu=file_menu)
+        file_menu.add_command(label='Charger Image', command=self.load_image)
+        file_menu.add_command(label='Sauvegarder Masque', command=self.save_mask)
+        file_menu.add_separator()
+        file_menu.add_command(label='Quitter', command=self.master.destroy)
+        
+        edit_menu = Menu(menu, tearoff=0)
+        menu.add_cascade(label='Édition', menu=edit_menu)
+        edit_menu.add_command(label='Couleur Pinceau', command=self.change_fg)
+        edit_menu.add_command(label='Couleur Fond', command=self.change_bg)
+        edit_menu.add_separator()
+        edit_menu.add_command(label='Effacer Masque', command=self.clear_mask)
+        edit_menu.add_command(label='Réinitialiser Tout', command=self.clear_all)
 
-        # shape -> (1,1,H,W)
-        mask = mask[np.newaxis, np.newaxis, :, :]
+    def setup_bindings(self):
+        """Configure les événements de la souris"""
+        # Dessin avec bouton gauche
+        self.canvas.bind('<Button-1>', self.start_draw)
+        self.canvas.bind('<B1-Motion>', self.draw)
+        self.canvas.bind('<ButtonRelease-1>', self.stop_draw)
+        
+        # Effacement avec bouton droit
+        self.canvas.bind('<Button-3>', self.start_erase)
+        self.canvas.bind('<B3-Motion>', self.erase)
+        self.canvas.bind('<ButtonRelease-3>', self.stop_draw)
+        
+        # Redimensionnement
+        self.canvas.bind('<Configure>', self.on_canvas_resize)
 
-        if to_torch and (torch is not None):
-            try:
-                t = torch.from_numpy(mask).float().to(device)
-                return t
-            except Exception:
-                return mask
-        return mask
+    def change_pen_width(self, value):
+        """Change la largeur du pinceau"""
+        try:
+            self.pen_width = float(value)
+            self.pen_label.config(text=f'{int(self.pen_width)} px')
+        except:
+            pass
 
+    def canvas_to_image_coords(self, cx, cy):
+        """Convertit les coordonnées canvas en coordonnées image"""
+        if self.loaded_image is None:
+            return None, None
+        ix = int(round((cx - self.view_x0) / max(self.view_scale, 1e-6)))
+        iy = int(round((cy - self.view_y0) / max(self.view_scale, 1e-6)))
+        return ix, iy
+
+    def draw_circle_on_mask(self, cx, cy, radius, fill_value=255):
+        """Dessine un cercle sur le masque à la résolution native"""
+        if self.mask_image is None:
+            return
+        
+        ix, iy = self.canvas_to_image_coords(cx, cy)
+        if ix is None or iy is None:
+            return
+        
+        # Rayon à la résolution de l'image
+        img_radius = max(1, int(round(radius / max(self.view_scale, 1e-6))))
+        
+        draw = ImageDraw.Draw(self.mask_image)
+        bbox = [ix - img_radius, iy - img_radius, ix + img_radius, iy + img_radius]
+        draw.ellipse(bbox, fill=fill_value)
+
+    def erase_circle_on_mask(self, cx, cy, radius):
+        """Efface (met à 0) un cercle sur le masque à la résolution native"""
+        if self.mask_image is None:
+            return
+        ix, iy = self.canvas_to_image_coords(cx, cy)
+        if ix is None or iy is None:
+            return
+        img_radius = max(1, int(round(radius / max(self.view_scale, 1e-6))))
+        draw = ImageDraw.Draw(self.mask_image)
+        bbox = [ix - img_radius, iy - img_radius, ix + img_radius, iy + img_radius]
+        draw.ellipse(bbox, fill=0)
+
+    def start_draw(self, event):
+        """Commence le dessin"""
+        self.old_x = event.x
+        self.old_y = event.y
+        # Dessiner le premier point
+        self.draw_point(event.x, event.y, self.color_fg, 255)
+
+    def start_erase(self, event):
+        """Commence l'effacement: supprimer uniquement le masque sans peindre"""
+        self.old_x = event.x
+        self.old_y = event.y
+        self.erase_point(event.x, event.y)
+
+    def draw(self, event):
+        """Dessine en continu"""
+        if self.old_x is not None and self.old_y is not None:
+            self.draw_line(self.old_x, self.old_y, event.x, event.y, self.color_fg, 255)
+        self.old_x = event.x
+        self.old_y = event.y
+
+    def erase(self, event):
+        """Efface en continu: supprime les objets 'mask_draw' et remet à 0 dans mask_image"""
+        if self.old_x is not None and self.old_y is not None:
+            self.erase_line(self.old_x, self.old_y, event.x, event.y)
+        self.old_x = event.x
+        self.old_y = event.y
+
+    def erase_point(self, x, y):
+        """Efface localement le masque au point (clic droit)"""
+        r = self.pen_width / 2
+        # Supprimer du canvas uniquement les éléments du masque et effacer leur empreinte dans mask_image
+        for item in self.canvas.find_overlapping(int(x - r), int(y - r), int(x + r), int(y + r)):
+            tags = self.canvas.gettags(item)
+            if 'mask_draw' in tags:
+                # Récupérer les coordonnées de l'ellipse dessinée sur le canvas
+                coords = self.canvas.coords(item)
+                if len(coords) >= 4 and self.mask_image is not None:
+                    cx1, cy1, cx2, cy2 = coords[:4]
+                    # Convertir le rectangle du canvas en coordonnées image
+                    ix1, iy1 = self.canvas_to_image_coords(cx1, cy1)
+                    ix2, iy2 = self.canvas_to_image_coords(cx2, cy2)
+                    if None not in (ix1, iy1, ix2, iy2):
+                        draw = ImageDraw.Draw(self.mask_image)
+                        # Effacer précisément l'ellipse correspondante
+                        draw.ellipse([ix1, iy1, ix2, iy2], fill=0)
+                # Supprimer l'objet du canvas
+                self.canvas.delete(item)
+        # Mettre à jour le masque image au point courant (sécurité pour continuité)
+        self.erase_circle_on_mask(x, y, r)
+
+    def erase_line(self, x1, y1, x2, y2):
+        """Efface une ligne continue sur le masque en supprimant les dessins et en mettant à 0 le masque"""
+        dx = x2 - x1
+        dy = y2 - y1
+        distance = max(1, int(np.sqrt(dx*dx + dy*dy)))
+        steps = max(1, int(distance / (self.pen_width / 4)))
+        for i in range(steps + 1):
+            t = i / max(steps, 1)
+            x = x1 + t * dx
+            y = y1 + t * dy
+            self.erase_point(x, y)
+
+    def draw_point(self, x, y, color, mask_value):
+        """Dessine un point (cercle) sur le canvas et le masque"""
+        r = self.pen_width / 2
+        # Dessiner sur le canvas
+        self.canvas.create_oval(x - r, y - r, x + r, y + r, 
+                               fill=color, outline=color, tags='mask_draw')
+        # Dessiner sur le masque
+        self.draw_circle_on_mask(x, y, r, mask_value)
+
+    def draw_line(self, x1, y1, x2, y2, color, mask_value):
+        """Dessine une ligne de cercles entre deux points"""
+        # Calculer la distance
+        dx = x2 - x1
+        dy = y2 - y1
+        distance = max(1, int(np.sqrt(dx*dx + dy*dy)))
+        
+        # Dessiner des cercles le long de la ligne
+        steps = max(1, int(distance / (self.pen_width / 4)))  # Overlap pour un trait continu
+        for i in range(steps + 1):
+            t = i / max(steps, 1)
+            x = x1 + t * dx
+            y = y1 + t * dy
+            self.draw_point(x, y, color, mask_value)
+
+    def stop_draw(self, event):
+        """Arrête le dessin"""
+        self.old_x = None
+        self.old_y = None
 
     def load_image(self):
-        filename = filedialog.askopenfilename(initialdir = ".",
-                                          title = "Select a File",
-                                          filetypes = (("image files", "*.jpg*"),
-                                              ("all files", "*.*")))
+        """Charge une image"""
+        filename = filedialog.askopenfilename(
+            title="Sélectionner une image",
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp"), ("Tous les fichiers", "*.*")]
+        )
         if not filename:
             return
-        pil = Image.open(filename).convert('RGB')
-        self.image_to_mask = pil  # original PIL image (used for model)
+        
+        try:
+            # Charger l'image
+            self.loaded_image = Image.open(filename).convert('RGB')
+            w, h = self.loaded_image.size
+            
+            # Créer un masque noir à la même résolution
+            self.mask_image = Image.new('L', (w, h), 0)
+            
+            # Afficher l'image
+            self.display_image()
+            
+            print(f"Image chargée: {w}x{h} pixels")
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible de charger l'image:\n{e}")
 
-        # create a resized copy for display on canvas (fit canvas size)
-        disp = pil.copy()
-        disp = disp.resize((self.canvas_width, self.canvas_height), resample=Image.BILINEAR)
-        self._loaded_tk_image = ImageTk.PhotoImage(disp)
-
-        # if an image already exists on canvas, update it; otherwise create it
-        if getattr(self, 'canvas_image_id', None) is None:
-            # create image at top-left, then lower it below drawings
-            self.canvas_image_id = self.c.create_image(0, 0, anchor='nw', image=self._loaded_tk_image)
-            # ensure image is below drawing items
-            self.c.tag_lower(self.canvas_image_id)
+    def display_image(self):
+        """Affiche l'image sur le canvas en conservant les proportions"""
+        if self.loaded_image is None:
+            return
+        
+        # Obtenir les dimensions actuelles du canvas
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        if cw <= 1 or ch <= 1:
+            cw, ch = self.canvas_width, self.canvas_height
+        
+        w, h = self.loaded_image.size
+        
+        # Calculer l'échelle pour conserver les proportions
+        scale = min(cw / w, ch / h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        
+        # Centrer l'image
+        self.view_scale = scale
+        self.view_x0 = (cw - new_w) // 2
+        self.view_y0 = (ch - new_h) // 2
+        
+        # Redimensionner pour l'affichage
+        display_img = self.loaded_image.copy().resize((new_w, new_h), Image.Resampling.BILINEAR)
+        self.display_tk_image = ImageTk.PhotoImage(display_img)
+        
+        # Afficher sur le canvas
+        if self.canvas_image_id is None:
+            self.canvas_image_id = self.canvas.create_image(
+                self.view_x0, self.view_y0, anchor='nw', image=self.display_tk_image
+            )
         else:
-            self.c.itemconfig(self.canvas_image_id, image=self._loaded_tk_image)
+            self.canvas.itemconfig(self.canvas_image_id, image=self.display_tk_image)
+            self.canvas.coords(self.canvas_image_id, self.view_x0, self.view_y0)
+        
+        # Mettre l'image en arrière-plan
+        self.canvas.tag_lower(self.canvas_image_id)
+
+    def on_canvas_resize(self, event):
+        """Gère le redimensionnement du canvas"""
+        if self.loaded_image is not None:
+            # Effacer les dessins de masque
+            self.canvas.delete('mask_draw')
+            # Réafficher l'image
+            self.display_image()
+
+    def clear_mask(self):
+        """Efface uniquement le masque, conserve l'image"""
+        self.canvas.delete('mask_draw')
+        if self.loaded_image is not None:
+            w, h = self.loaded_image.size
+            self.mask_image = Image.new('L', (w, h), 0)
+        print("Masque effacé")
+
+    def clear_all(self):
+        """Réinitialise tout"""
+        self.canvas.delete(ALL)
+        self.loaded_image = None
+        self.mask_image = None
+        self.canvas_image_id = None
+        self.display_tk_image = None
+        print("Tout réinitialisé")
+
+    def save_mask(self):
+        """Sauvegarde le masque"""
+        if self.mask_image is None:
+            messagebox.showwarning("Attention", "Aucun masque à sauvegarder")
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("Tous les fichiers", "*.*")]
+        )
+        if filename:
+            self.mask_image.save(filename)
+            print(f"Masque sauvegardé: {filename}")
+
+    def change_fg(self):
+        """Change la couleur du pinceau"""
+        color = colorchooser.askcolor(color=self.color_fg)
+        if color[1]:
+            self.color_fg = color[1]
+
+    def change_bg(self):
+        """Change la couleur de fond"""
+        color = colorchooser.askcolor(color=self.color_bg)
+        if color[1]:
+            self.color_bg = color[1]
+            self.canvas['bg'] = self.color_bg
+
+    def list_models(self):
+        """Liste les modèles disponibles"""
+        import os
+        if not os.path.isdir(models_dir):
+            return []
+        return sorted([f for f in os.listdir(models_dir) if f.endswith(('.pth', '.pt'))])
+
+    def select_model_dialog(self):
+        """Ouvre une fenêtre de sélection de modèle"""
+        models = self.list_models()
+        if not models:
+            messagebox.showwarning("Attention", f"Aucun modèle trouvé dans {models_dir}")
+            return
+        
+        dialog = Toplevel(self.master)
+        dialog.title('Sélection du modèle')
+        dialog.geometry('400x200')
+        
+        Label(dialog, text='Choisissez un modèle:', font='Georgia 12').pack(pady=10)
+        
+        combo = ttk.Combobox(dialog, values=models, state='readonly', width=40)
+        combo.pack(pady=10)
+        if models:
+            combo.current(0)
+        
+        def load_selected():
+            model_name = combo.get()
+            if model_name:
+                self.load_model(models_dir + model_name)
+                dialog.destroy()
+        
+        Button(dialog, text='Charger', command=load_selected, width=15).pack(pady=10)
+
+    def load_model(self, path):
+        """Charge un modèle avec gestion intelligente du state_dict"""
+        # Charger le fichier
+        checkpoint = torch.load(path, map_location=device)
+        
+        # Extraire le vrai state_dict (peut être enveloppé dans différentes clés)
+        if isinstance(checkpoint, dict):
+            # Chercher le state_dict dans les clés communes
+            for key in ['netG', 'generator', 'state_dict', 'model_state_dict', 'gen_state_dict']:
+                if key in checkpoint:
+                    state_dict = checkpoint[key]
+                    print(f"State_dict trouvé dans la clé: '{key}'")
+                    break
+            else:
+                # Si aucune clé connue, utiliser directement le checkpoint
+                state_dict = checkpoint
+        else:
+            state_dict = checkpoint
+        
+        # Nettoyer les préfixes du state_dict
+        def clean_state_dict(state):
+            new_state = {}
+            for k, v in state.items():
+                # Retirer les préfixes courants
+                nk = k
+                for prefix in ['module.', 'unet.', 'generator.', 'model.', 'net.']:
+                    if nk.startswith(prefix):
+                        nk = nk[len(prefix):]
+                        break
+                new_state[nk] = v
+            return new_state
+        
+        cleaned_state = clean_state_dict(state_dict)
+        
+        # Essayer de charger avec différentes architectures
+        architectures = [
+            ("PENNet", lambda: InpaintGeneratorPennet(init_weights=False)),
+            ("PenNET/InpaintGenerator", lambda: PenNET(3)),
+            ("UNet", lambda: UNet(3))
+        ]
+        
+        for arch_name, model_builder in architectures:
+            try:
+                print(f"Tentative de chargement avec {arch_name}...")
+                candidate = model_builder().to(device)
+                candidate.load_state_dict(cleaned_state, strict=False)
+                
+                # Vérifier si le chargement a réussi (au moins 50% des paramètres chargés)
+                model_keys = set(candidate.state_dict().keys())
+                loaded_keys = set(cleaned_state.keys())
+                match_ratio = len(model_keys & loaded_keys) / len(model_keys)
+                
+                if match_ratio > 0.5:
+                    self.model = candidate
+                    self.model_type = arch_name
+                    # Ajuster la taille d'entrée selon le modèle
+                    self.input_size = 512
+                    # Mettre à jour le transform global
+                    global transform
+                    transform = build_transform(self.input_size)
+                    model_name = path.split('/')[-1]
+                    self.selected_model_path = path
+                    self.model_label.config(text=f'{model_name}\n({arch_name})', fg='green')
+                    print(f"Modèle chargé avec {arch_name} ({match_ratio*100:.1f}% correspondance)")
+                    return
+                else:
+                    print(f"{arch_name}: Trop peu de paramètres correspondent ({match_ratio*100:.1f}%)")
+                    
+            except Exception as e:
+                print(f"{arch_name} échec: {str(e)[:100]}")
+                continue
+        
+        # Si aucune architecture n'a fonctionné
+        messagebox.showerror("Erreur", 
+            f"Impossible de charger le modèle.\n"
+            f"Aucune architecture compatible trouvée.\n"
+            f"Clés disponibles dans le state_dict:\n{list(cleaned_state.keys())[:5]}..."
+        )
+        print("Échec du chargement avec toutes les architectures")
+
+    def get_mask_tensor(self):
+        """Convertit le masque PIL en tensor PyTorch"""
+        if self.mask_image is None or torch is None:
+            return None
+        
+        # Redimensionner le masque pour correspondre à l'entrée du modèle
+        resized_mask = self.mask_image.resize((self.input_size, self.input_size), Image.Resampling.NEAREST)
+        
+        # Convertir en array numpy
+        mask_array = np.array(resized_mask).astype(np.float32) / 255.0
+        
+        # Ajouter les dimensions batch et channel: (1, 1, H, W)
+        mask_tensor = torch.from_numpy(mask_array[np.newaxis, np.newaxis, :, :]).float().to(device)
+        
+        return mask_tensor
 
     def apply_mask(self):
-        if self.image_to_mask is None:
-            print("No image loaded. Use 'Load image' first.")
+        """Applique le masque avec le modèle"""
+        if self.loaded_image is None:
+            messagebox.showwarning("Attention", "Chargez d'abord une image")
             return
+        
+        if self.model is None:
+            messagebox.showwarning("Attention", "Chargez d'abord un modèle")
+            return
+        
+        try:
+            print("Application du masque...")
+            
+            # Transformer l'image (inclut redimensionnement selon le modèle)
+            img_tensor = transform(self.loaded_image).unsqueeze(0).to(device)
+            
+            # Obtenir le masque (inversé pour le modèle)
+            mask_tensor = self.get_mask_tensor()
+            if mask_tensor is None:
+                messagebox.showwarning("Attention", "Pas de masque détecté")
+                return
+            
+            # Inverser le masque (zone à inpainter = 1)
+            #mask_tensor = 1.0 - mask_tensor
+            
+            # Créer l'image masquée
+            fill_value = -1.0 if img_tensor.min().item() < 0.0 else 1.0
+            masked_img = img_tensor * (1 - mask_tensor) + fill_value * mask_tensor
 
-        # prepare image tensor using the same transform used at training
-        img_t = transform(self.image_to_mask).unsqueeze(0).to(device)  # (1,3,256,256)
+            # Préparer l'entrée du réseau
+            if self.model_type == "PENNet":
+                # PEN-Net attend 4 canaux: image RGB + masque
+                net_input = torch.cat([masked_img, mask_tensor], dim=1)
+            else:
+                net_input = torch.cat([masked_img, mask_tensor], dim=1)
+            
+            # Inférence
+            self.model.eval()
+            with torch.no_grad():
+                if self.model_type == "PENNet":
+                    output = self.model(net_input,mask_tensor)
+                else:
+                    try:
+                        output = self.model(net_input, mask_tensor)
+                    except TypeError:
+                        output = self.model(net_input)
+            
+            # Extraire la reconstruction
+            reconstructed = output[1] if isinstance(output, tuple) and len(output) >= 2 else output
+            
+            # Combiner reconstruction et image originale
+            final_result = reconstructed * mask_tensor + img_tensor * (1.0 - mask_tensor)
+            
+            # Convertir pour affichage
+            img_display = to_img(img_tensor)
+            masked_display = to_img(masked_img)
+            recon_display = to_img(reconstructed)
+            final_display = to_img(final_result)
+            
+            # Afficher les résultats
+            fig, axes = plt.subplots(1, 4, figsize=(15, 10))
+            
+            axes[0].imshow(img_display)
+            axes[0].set_title("Image Originale", fontsize=12, fontweight='bold')
+            axes[0].axis('off')
+            
+            axes[1].imshow(masked_display)
+            axes[1].set_title("Image Masquée", fontsize=12, fontweight='bold')
+            axes[1].axis('off')
 
-        canva_mask = self.get_mask_tensor(to_torch=(torch is not None), device=device , invert=True)
-        canva_mask = canva_mask.float()
-        canva_mask = torch.nn.functional.interpolate(canva_mask, size=(target_model_resolution, target_model_resolution), mode='nearest')
-        canva_mask = canva_mask.to(device)
-        m = canva_mask
-        m = m.float()
-
-        mask_t = 1.0 - m
-
-        # Build masked image: here mask==1 means kept pixels
-        fill_value = -1.0 if img_t.min().item() < 0.0 else 1.0
-
-        # build input: masked image + mask channel
-        masked_img = img_t * (1 - mask_t) + fill_value * mask_t  # fill holes
-
-        net_input = torch.cat([masked_img, mask_t], dim=1)
-
-        model.eval()
-        with torch.no_grad():
-            feats, reconstructed = model(net_input, mask_t)
-
-        cheated = reconstructed * mask_t + img_t * (1.0 - mask_t)
-
-        img_disp = to_img(img_t)
-        masked_disp = to_img(masked_img)
-        recon_disp = to_img(reconstructed)
-        cheated = to_img(cheated)
-
-        fig, ax = plt.subplots(1, 4, figsize=(12, 4))
-        ax[0].imshow(img_disp)
-        ax[0].set_title("Image originale")
-
-        ax[1].imshow(masked_disp)
-        ax[1].set_title("Image masquée")
-
-        ax[2].imshow(recon_disp)
-        ax[2].set_title("Image générée")
-
-        # Image triché avec la partie non masquée de l'originale
-
-        ax[3].imshow(cheated)
-        ax[3].set_title("Assemblage généré/original")
-
-        for a in ax:
-            a.axis("off")
-        plt.show()
+            axes[2].imshow(recon_display)
+            axes[2].set_title("Reconstruction Complète", fontsize=12, fontweight='bold')
+            axes[2].axis('off')
+            
+            axes[3].imshow(final_display)
+            axes[3].set_title("Résultat Final", fontsize=12, fontweight='bold')
+            axes[3].axis('off')
+            
+            plt.tight_layout()
+            plt.show()
+            
+            print("Masque appliqué avec succès!")
+            
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Erreur lors de l'application du masque:\n{e}")
+            print(f"Erreur: {e}")
 
 
-
-
-win = Tk()
-win.title("Adobe3000 Premium edition 0.1$/s")
-main(win)
-win.mainloop()
+if __name__ == "__main__":
+    root = Tk()
+    root.title("Adobe3000 Premium Edition - Masquage Intelligent")
+    root.geometry("900x600")
+    app = ImprovedMaskingApp(root)
+    root.mainloop()
